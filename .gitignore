@@ -21,3 +21,10 @@ target
 #.idea/
 
 .DS_Store
+
+# Local runtime state and explicit initialization input
+initial-configuration.json
+discovery.json
+discovery.lock
+discovery.state.json
+discovery.mock-state.json
