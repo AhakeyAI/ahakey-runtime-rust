@@ -1,5 +1,9 @@
+pub mod ahakey;
 pub mod configuration;
 pub mod discovery;
 pub mod error;
+pub mod ipc;
+pub mod protocol;
+pub mod runtime;
 pub mod storage;
 pub mod wire;
