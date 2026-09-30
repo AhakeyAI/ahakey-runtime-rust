@@ -18,12 +18,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut initialize_path = None;
     let mut input_monitor = false;
     let mut parent_stdin = false;
+    let mut debug = match std::env::var("AHAKEY_DEBUG").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => cfg!(debug_assertions),
+    };
+    let mut debug_log = std::env::var_os("AHAKEY_DEBUG_LOG").map(PathBuf::from);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--mock" => mock = true,
             "--input-monitor" => input_monitor = true,
             "--parent-stdin" => parent_stdin = true,
+            "--debug" => debug = true,
+            "--debug-log" => {
+                debug_log = Some(PathBuf::from(
+                    args.next().ok_or("--debug-log needs a new file path")?,
+                ));
+            }
             "--discovery" => {
                 discovery_path = PathBuf::from(
                     args.next()
@@ -42,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "AhaKey Runtime\n  --mock                     Explicit simulated X1 (no Bluetooth)\n  --discovery ABSOLUTE_PATH  Private discovery file; default matches Studio\n  --device-id ID             Select one discovered X1\n  --initialize FILE          Explicitly overwrite all four modes and brightness on selected X1; requires --device-id\n"
                 );
                 println!(
-                    "  --input-monitor           Start the bundled HID observation helper\n  --parent-stdin            Shut down when the parent closes stdin"
+                    "  --debug                    Trace BLE frames, state and command timing to stderr\n  --debug-log NEW_FILE       Write JSONL diagnostics to a new file (implies --debug)\n  --input-monitor           Start the bundled HID observation helper\n  --parent-stdin            Shut down when the parent closes stdin\nDefaults: diagnostics on in Debug builds, off in Release builds\nEnvironment: AHAKEY_DEBUG=0|1, AHAKEY_DEBUG_LOG=NEW_FILE"
                 );
                 return Ok(());
             }
@@ -52,6 +64,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mock && (initialize_path.is_some() || selected.is_some()) {
         return Err("--mock cannot be combined with --initialize or --device-id".into());
     }
+    let _debug_guard = if debug || debug_log.is_some() {
+        Some(ahakey_runtime_rust::debug::init(debug_log.as_deref())?)
+    } else {
+        None
+    };
+    ahakey_runtime_rust::debug::event("runtime.start", || {
+        serde_json::json!({
+            "version":env!("CARGO_PKG_VERSION"), "mock":mock,
+            "selectedDevice":selected, "inputMonitor":input_monitor,
+        })
+    });
     if initialize_path.is_some() && selected.is_none() {
         return Err(
             "--initialize requires --device-id to identify the device being overwritten".into(),
@@ -141,6 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     drop(discovery);
+    ahakey_runtime_rust::debug::event("runtime.stop", || serde_json::json!({}));
     Ok(())
 }
 async fn parent_closed() {

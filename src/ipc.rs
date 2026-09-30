@@ -168,6 +168,7 @@ async fn session(
                         continue;
                     }
                 };
+                let started = std::time::Instant::now();
                 let outcome = if request.method == "runtime.hello" {
                     match decode::<Hello>(request.params) {
                         Ok(hello) if token_matches(&token, &hello.token) => {
@@ -196,6 +197,11 @@ async fn session(
                         _ => Err(Error("INVALID_PARAMS")),
                     }
                 } else { dispatch(&runtime, &request.method, request.params).await };
+                crate::debug::event("ipc.request", || json!({
+                    "method":if request.method == "runtime.hello" || METHODS.contains(&request.method.as_str()) { request.method.as_str() } else { "unknown" },
+                    "durationMs":started.elapsed().as_secs_f64() * 1000.0,
+                    "error":outcome.as_ref().err().map(|error| error.0),
+                }));
                 match outcome {
                     Ok(result) => json!({"jsonrpc":"2.0", "id":request.id, "result":result}),
                     Err(error) => failure(json!(request.id), match error.0 { "INVALID_PARAMS" => -32602, "UNSUPPORTED_CAPABILITY" => -32601, _ => -32000 }, error.0),

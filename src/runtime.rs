@@ -44,6 +44,12 @@ struct State {
 }
 impl State {
     fn emit(&mut self, kind: &'static str, data: Value) {
+        if matches!(
+            kind,
+            "device.changed" | "operation.changed" | "configuration.invalidated"
+        ) {
+            crate::debug::event(kind, || data.clone());
+        }
         self.sequence += 1;
         let _ = self.events.send(Event {
             sequence: self.sequence,
@@ -295,6 +301,12 @@ impl Runtime {
         Ok(operation)
     }
     async fn publish_hardware(&self, id: &str, hardware: &HardwareState) {
+        crate::debug::event("device.state", || {
+            json!({
+                "deviceId":id, "workMode":hardware.work_mode, "lightMode":hardware.light_mode,
+                "battery":hardware.battery, "lever":hardware.lever, "brightness":hardware.brightness,
+            })
+        });
         let mut state = self.state.lock().await;
         let entry = state.devices.get_mut(id).unwrap();
         let old = entry.device.clone();
@@ -383,6 +395,12 @@ impl Runtime {
         let commands = plan.expect("model plan checked before execution");
         let mut failure = None;
         for (index, command) in commands.iter().enumerate() {
+            crate::debug::event("operation.command", || {
+                json!({
+                    "deviceId":id, "operationId":operation_id, "index":index + 1,
+                    "total":commands.len(), "opcode":command.get(2),
+                })
+            });
             if let Err(error) = hardware.write_confirmed(command).await {
                 failure = Some(error);
                 break;

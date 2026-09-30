@@ -20,6 +20,10 @@ pub async fn discover(
     initialize: Option<Configuration>,
 ) {
     loop {
+        crate::debug::event(
+            "ble.discovery",
+            || serde_json::json!({"selectedDevice":selected}),
+        );
         match find_x1(selected.as_deref()).await {
             Ok(Some(device)) => {
                 if let Err(error) = runtime.register(device, initialize, false).await {
@@ -27,7 +31,7 @@ pub async fn discover(
                 }
                 return;
             }
-            Ok(None) => {}
+            Ok(None) => crate::debug::event("ble.notFound", || serde_json::json!({})),
             Err(error) => eprintln!("Bluetooth discovery: {error}"),
         }
         tokio::time::sleep(Duration::from_secs(10)).await;

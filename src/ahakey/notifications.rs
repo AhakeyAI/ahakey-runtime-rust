@@ -14,6 +14,7 @@ pub(super) struct Notifications {
     pub disconnects: Pin<Box<dyn Stream<Item = ()> + Send>>,
     state: Option<HardwareState>,
     changed: bool,
+    device_id: Option<String>,
 }
 
 impl Notifications {
@@ -26,7 +27,13 @@ impl Notifications {
             disconnects,
             state: None,
             changed: false,
+            device_id: None,
         }
+    }
+
+    pub fn with_device(mut self, device_id: String) -> Self {
+        self.device_id = Some(device_id);
+        self
     }
 
     async fn next_frame(&mut self) -> Result<Vec<u8>> {
@@ -34,10 +41,19 @@ impl Notifications {
             let notification = tokio::select! {
                 biased;
                 _ = self.disconnects.next() => {
+                    crate::debug::event("ble.linkLost", || serde_json::json!({"deviceId":self.device_id}));
                     return Err(Error("DEVICE_DISCONNECTED"));
                 },
                 frame = self.frames.next() => frame.ok_or(Error("DEVICE_DISCONNECTED"))?,
             };
+            crate::debug::event("ble.rx", || {
+                serde_json::json!({
+                    "deviceId":self.device_id, "service":notification.service_uuid.to_string(),
+                    "characteristic":notification.uuid.to_string(),
+                    "validFrame":valid_frame(&notification.value),
+                    "frame":crate::debug::bytes(&notification.value),
+                })
+            });
             if notification.service_uuid == uuid_from_u16(0x7340)
                 && notification.uuid == uuid_from_u16(0x7344)
                 && valid_frame(&notification.value)
@@ -70,12 +86,21 @@ impl Notifications {
             let data = self.next_frame().await?;
             self.observe(&data);
             if data[2] != opcode {
+                crate::debug::event("ble.interleaved", || {
+                    serde_json::json!({
+                        "deviceId":self.device_id, "awaitingOpcode":opcode, "receivedOpcode":data[2],
+                    })
+                });
                 continue;
             }
             if opcode == 0 {
                 if X1State::from_bytes(&data).is_some() {
                     return Ok(data);
                 }
+                crate::debug::event(
+                    "ble.invalidStatus",
+                    || serde_json::json!({"deviceId":self.device_id}),
+                );
             } else if data.len() >= 6 {
                 return if data[3] == 0 {
                     Ok(data)

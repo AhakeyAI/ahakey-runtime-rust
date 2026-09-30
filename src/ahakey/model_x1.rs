@@ -37,6 +37,13 @@ impl ModelX1 {
         }
     }
     async fn exchange(&mut self, command: &[u8]) -> Result<Vec<u8>> {
+        let started = std::time::Instant::now();
+        crate::debug::event("ble.tx", || {
+            serde_json::json!({
+                "deviceId":format!("x1-{}", self.peripheral.id()),
+                "frame":crate::debug::bytes(command),
+            })
+        });
         let mut phase = "GATT write";
         let outcome = tokio::time::timeout(Duration::from_secs(4), async {
             let characteristic = self
@@ -56,6 +63,13 @@ impl ModelX1 {
         })
         .await
         .unwrap_or(Err(Error("DEVICE_TIMEOUT")));
+        crate::debug::event("ble.exchange", || {
+            serde_json::json!({
+                "deviceId":format!("x1-{}", self.peripheral.id()), "opcode":command.get(2),
+                "phase":phase, "durationMs":started.elapsed().as_secs_f64() * 1000.0,
+                "error":outcome.as_ref().err().map(|error| error.0),
+            })
+        });
         // An ACK has no request ID. Never reuse a session after an uncertain exchange.
         if let Err(error) = &outcome {
             eprintln!(
@@ -109,6 +123,15 @@ impl ModelX1 {
             Error("DEVICE_NOT_READY")
         })?;
         let characteristics = self.peripheral.characteristics();
+        crate::debug::event("ble.services", || {
+            serde_json::json!({
+                "deviceId":format!("x1-{}", self.peripheral.id()),
+                "characteristics":characteristics.iter().map(|c| serde_json::json!({
+                    "service":c.service_uuid.to_string(), "uuid":c.uuid.to_string(),
+                    "properties":format!("{:?}", c.properties),
+                })).collect::<Vec<_>>(),
+            })
+        });
         let find = |uuid| {
             characteristics
                 .iter()
@@ -118,13 +141,16 @@ impl ModelX1 {
         };
         self.command_char = Some(find(0x7343)?);
         let notify = find(0x7344)?;
-        self.notifications = Some(Notifications::new(
-            self.peripheral.notifications().await.map_err(|error| {
-                eprintln!("X1 BLE notifications: {error}");
-                Error("DEVICE_NOT_READY")
-            })?,
-            Box::pin(disconnects),
-        ));
+        self.notifications = Some(
+            Notifications::new(
+                self.peripheral.notifications().await.map_err(|error| {
+                    eprintln!("X1 BLE notifications: {error}");
+                    Error("DEVICE_NOT_READY")
+                })?,
+                Box::pin(disconnects),
+            )
+            .with_device(format!("x1-{}", self.peripheral.id())),
+        );
         self.peripheral.subscribe(&notify).await.map_err(|error| {
             eprintln!("X1 BLE subscribe: {error}");
             Error("DEVICE_NOT_READY")
@@ -146,6 +172,10 @@ impl Hardware for ModelX1 {
         crate::protocol::x1::keymap_commands(request)
     }
     async fn connect(&mut self) -> Result<HardwareState> {
+        crate::debug::event(
+            "ble.connect",
+            || serde_json::json!({"deviceId":format!("x1-{}", self.peripheral.id())}),
+        );
         let result = match tokio::time::timeout(Duration::from_secs(15), self.open()).await {
             Ok(result) => result,
             Err(_) => {
@@ -156,9 +186,19 @@ impl Hardware for ModelX1 {
         if result.is_err() {
             let _ = self.disconnect().await;
         }
+        crate::debug::event("ble.connectResult", || {
+            serde_json::json!({
+                "deviceId":format!("x1-{}", self.peripheral.id()),
+                "error":result.as_ref().err().map(|error| error.0),
+            })
+        });
         result
     }
     async fn disconnect(&mut self) -> Result<()> {
+        crate::debug::event(
+            "ble.disconnect",
+            || serde_json::json!({"deviceId":format!("x1-{}", self.peripheral.id())}),
+        );
         self.command_char = None;
         self.notifications = None;
         tokio::time::timeout(Duration::from_secs(3), self.peripheral.disconnect())

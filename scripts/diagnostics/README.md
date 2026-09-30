@@ -2,6 +2,12 @@
 
 These tools do not change keyboard mappings or firmware.
 
+For new firmware integration, Debug builds print diagnostics by default: run
+`cargo run --locked` without Studio to inspect raw BLE frames, command timing,
+state changes, and IPC outcomes. Release builds require `--debug`;
+`--debug-log NEW_FILE` redirects diagnostics to a file. Set `AHAKEY_DEBUG=0`
+to disable the Debug build default. See [debug mode](../../docs/debug-mode.md) for setup and examples.
+
 ## Runtime and BLE session
 
 ```sh

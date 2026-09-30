@@ -1,5 +1,6 @@
 pub mod ahakey;
 pub mod configuration;
+pub mod debug;
 pub mod discovery;
 pub mod error;
 pub mod input;
