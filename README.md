@@ -138,3 +138,7 @@ For hardware reports include OS, Rust version, device/firmware model, reproducti
 ## License
 
 [Apache License 2.0](LICENSE).
+
+## Runtime key remapping
+
+`keymap.apply` writes selected keys without a complete configuration baseline or lighting support. It uses the existing device worker and durable operations. See [API and IPC client](docs/keymap-api.md).

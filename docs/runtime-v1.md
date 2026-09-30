@@ -102,3 +102,7 @@ python3 scripts/diagnostics/check-device.py 'x1-DEVICE_ID' --reconnect
 ```
 
 省略 `--reconnect` 仅检查当前状态。添加该参数会主动断开/重连所选设备并使其配置基线失效；脚本不写配置。探针使用 Studio 原始 IPC 客户端，等待真实 ready 事件，失败退出码为 1。本次证据只覆盖发现、连接、状态与重连，不代表完整硬件配置验收。
+
+## 独立改键扩展
+
+新增 `keymap.apply`，不受完整配置基线和亮度能力限制；共享现有 worker、操作日志和 ACK 确认。见 [改键 API](keymap-api.md)。

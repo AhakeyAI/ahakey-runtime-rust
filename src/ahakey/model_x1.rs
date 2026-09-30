@@ -142,6 +142,9 @@ impl Hardware for ModelX1 {
     ) -> Result<Vec<Vec<u8>>> {
         crate::protocol::x1::configuration_commands(configuration)
     }
+    fn keymap_commands(&self, request: &crate::keymap::KeymapApply) -> Result<Vec<Vec<u8>>> {
+        crate::protocol::x1::keymap_commands(request)
+    }
     async fn connect(&mut self) -> Result<HardwareState> {
         let result = match tokio::time::timeout(Duration::from_secs(15), self.open()).await {
             Ok(result) => result,

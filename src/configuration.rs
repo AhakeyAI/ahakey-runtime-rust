@@ -148,28 +148,7 @@ impl Configuration {
                 {
                     return Err(invalid());
                 }
-                match &key.action {
-                    Action::Disabled {} => {}
-                    Action::Shortcut { modifiers, .. } => {
-                        if !unique(modifiers.iter())
-                            || modifiers.iter().any(|m| !MODIFIERS.contains(&m.as_str()))
-                        {
-                            return Err(invalid());
-                        }
-                    }
-                    Action::Macro { steps } => {
-                        if steps.is_empty() || steps.len() > 49 {
-                            return Err(invalid());
-                        }
-                        for step in steps {
-                            if let MacroStep::Delay { delay_ms } = step
-                                && (*delay_ms > 765 || delay_ms % 3 != 0)
-                            {
-                                return Err(invalid());
-                            }
-                        }
-                    }
-                }
+                key.action.validate()?;
             }
             for light in &mode.lights {
                 if !STATES.contains(&light.state.as_str())
@@ -232,5 +211,34 @@ impl Apply {
     pub fn canonicalize(&mut self) {
         self.scope.modes.sort();
         self.changes.canonicalize();
+    }
+}
+
+impl Action {
+    pub fn validate(&self) -> Result<()> {
+        let invalid = || Error("INVALID_PARAMS");
+        match self {
+            Action::Disabled {} => {}
+            Action::Shortcut { modifiers, .. } => {
+                if !unique(modifiers.iter())
+                    || modifiers.iter().any(|m| !MODIFIERS.contains(&m.as_str()))
+                {
+                    return Err(invalid());
+                }
+            }
+            Action::Macro { steps } => {
+                if steps.is_empty() || steps.len() > 49 {
+                    return Err(invalid());
+                }
+                for step in steps {
+                    if let MacroStep::Delay { delay_ms } = step
+                        && (*delay_ms > 765 || delay_ms % 3 != 0)
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

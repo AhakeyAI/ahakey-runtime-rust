@@ -224,6 +224,10 @@ async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> Result<Valu
             let params: OperationParams = decode(params)?;
             Ok(json!(runtime.operation(&params.operation_id).await?))
         }
+        "keymap.apply" => {
+            let operation = runtime.apply_keymap(decode(params)?).await?;
+            Ok(json!({"operationId":operation.operation_id,"status":operation.status}))
+        }
         "configuration.apply" => {
             let operation = runtime.apply(decode(params)?).await?;
             Ok(json!({"operationId":operation.operation_id,"status":operation.status}))

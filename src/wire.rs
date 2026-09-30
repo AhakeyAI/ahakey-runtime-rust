@@ -5,6 +5,7 @@ pub const METHODS: &[&str] = &[
     "runtime.subscribe",
     "configuration.get",
     "configuration.apply",
+    "keymap.apply",
     "operation.get",
     "device.connect",
     "device.disconnect",

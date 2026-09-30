@@ -4,6 +4,8 @@ pub mod discovery;
 pub mod error;
 pub mod input;
 pub mod ipc;
+pub mod keymap;
+pub mod mutation;
 pub mod protocol;
 pub mod runtime;
 pub mod storage;

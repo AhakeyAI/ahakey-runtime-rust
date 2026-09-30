@@ -115,3 +115,7 @@ python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 真机反馈请附 OS、Rust 版本、设备/固件型号、复现步骤和脱敏日志。提交改动时执行上述检查，区分自动测试与真机观察；保持中英文 README 同步。
 
 [Apache License 2.0](../../LICENSE)。
+
+## Runtime 独立改键
+
+`keymap.apply` 可直接修改指定键位，不要求完整配置基线或亮度支持；复用设备 worker 和持久化操作。见 [改键 API 与 IPC 客户端](../keymap-api.md)。

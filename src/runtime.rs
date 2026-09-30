@@ -2,6 +2,8 @@ use crate::{
     ahakey::{device::AhaKey, hardware::Hardware, state::HardwareState},
     configuration::{Apply, Configuration, Scope},
     error::{Error, Result},
+    keymap::KeymapApply,
+    mutation::Mutation,
     storage::{Journal, Record, Storage},
     wire::{ConfigurationDocument, Device, Operation},
 };
@@ -20,7 +22,7 @@ pub struct Event {
 enum Job {
     Connect,
     Disconnect,
-    Apply(Apply),
+    Apply(Mutation),
     Shutdown,
 }
 struct Entry {
@@ -195,14 +197,17 @@ impl Runtime {
         Ok(())
     }
     pub async fn apply(&self, request: Apply) -> Result<Operation> {
-        self.accept(request, false).await
+        self.accept(request.into(), false).await
     }
-    async fn accept(&self, mut request: Apply, initialize: bool) -> Result<Operation> {
+    pub async fn apply_keymap(&self, request: KeymapApply) -> Result<Operation> {
+        self.accept(request.into(), false).await
+    }
+    async fn accept(&self, mut request: Mutation, initialize: bool) -> Result<Operation> {
         request.validate()?;
         request.canonicalize();
         let mut state = self.state.lock().await;
         // Deduplication must precede readiness, busy, and baseline checks.
-        if let Some(record) = state.journal.operations.get(&request.operation_id) {
+        if let Some(record) = state.journal.operations.get(request.operation_id()) {
             return if record.request == request {
                 Ok(record.operation.clone())
             } else {
@@ -221,7 +226,7 @@ impl Runtime {
         }
         let entry = state
             .devices
-            .get_mut(&request.device_id)
+            .get_mut(request.device_id())
             .ok_or(Error("DEVICE_NOT_FOUND"))?;
         if entry.device.connection_state != "ready" {
             return Err(Error("DEVICE_NOT_READY"));
@@ -229,29 +234,31 @@ impl Runtime {
         if entry.busy {
             return Err(Error("BUSY"));
         }
-        if entry.document.base_token != request.base_token {
+        if entry.document.base_token != request.base_token() {
             return Err(Error("BASE_CONFLICT"));
         }
-        if !entry.lighting_supported {
-            return Err(Error("UNSUPPORTED_CAPABILITY"));
-        }
-        if entry.document.configuration.is_none()
-            && !(initialize && request.scope.modes == [0, 1, 2, 3])
-        {
-            return Err(Error("INCOMPLETE_WRITE_GROUP"));
+        if let Mutation::Configuration(config) = &request {
+            if !entry.lighting_supported {
+                return Err(Error("UNSUPPORTED_CAPABILITY"));
+            }
+            if entry.document.configuration.is_none()
+                && !(initialize && config.scope.modes == [0, 1, 2, 3])
+            {
+                return Err(Error("INCOMPLETE_WRITE_GROUP"));
+            }
         }
         let sender = entry.sender.clone();
         entry.busy = true;
         let operation = Operation {
-            operation_id: request.operation_id.clone(),
-            device_id: request.device_id.clone(),
+            operation_id: request.operation_id().to_owned(),
+            device_id: request.device_id().to_owned(),
             status: "accepted".into(),
             progress: 0.0,
             effect: "none".into(),
             error_code: None,
         };
         state.journal.operations.insert(
-            request.operation_id.clone(),
+            request.operation_id().to_owned(),
             Record {
                 request: request.clone(),
                 operation: operation.clone(),
@@ -259,11 +266,11 @@ impl Runtime {
         );
         if self.storage.save(&state.journal).await.is_err() {
             state.storage_healthy = false;
-            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+            state.devices.get_mut(request.device_id()).unwrap().busy = false;
             let failed = &mut state
                 .journal
                 .operations
-                .get_mut(&request.operation_id)
+                .get_mut(request.operation_id())
                 .unwrap()
                 .operation;
             failed.status = "failed".into();
@@ -272,11 +279,11 @@ impl Runtime {
             return Err(Error("STORAGE_ERROR"));
         }
         if sender.try_send(Job::Apply(request.clone())).is_err() {
-            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+            state.devices.get_mut(request.device_id()).unwrap().busy = false;
             let failed = &mut state
                 .journal
                 .operations
-                .get_mut(&request.operation_id)
+                .get_mut(request.operation_id())
                 .unwrap()
                 .operation;
             failed.status = "failed".into();
@@ -328,10 +335,13 @@ impl Runtime {
         let device = entry.device.clone();
         state.emit("device.changed", json!(device));
     }
-    async fn execute_apply(&self, hardware: &mut dyn Hardware, request: &Apply) {
-        let id = &request.device_id;
-        let operation_id = &request.operation_id;
-        let plan = hardware.configuration_commands(&request.changes);
+    async fn execute_apply(&self, hardware: &mut dyn Hardware, request: &Mutation) {
+        let id = request.device_id();
+        let operation_id = request.operation_id();
+        let plan = match request {
+            Mutation::Configuration(config) => hardware.configuration_commands(&config.changes),
+            Mutation::Keymap(keys) => hardware.keymap_commands(keys),
+        };
         {
             let mut state = self.state.lock().await;
             // A notification received after admission can invalidate the session or baseline.
@@ -340,7 +350,7 @@ impl Runtime {
                 Some(error.0)
             } else if entry.device.connection_state != "ready" {
                 Some("DEVICE_NOT_READY")
-            } else if entry.document.base_token != request.base_token {
+            } else if entry.document.base_token != request.base_token() {
                 Some("BASE_CONFLICT")
             } else {
                 None
@@ -408,14 +418,38 @@ impl Runtime {
             state.invalidate(id);
         } else {
             let entry = state.devices.get_mut(id).unwrap();
-            if let Some(config) = &mut entry.document.configuration {
-                config.merge(&request.changes);
-            } else {
-                entry.document.configuration = Some(request.changes.clone());
+            match request {
+                Mutation::Configuration(request) => {
+                    if let Some(config) = &mut entry.document.configuration {
+                        config.merge(&request.changes);
+                    } else {
+                        entry.document.configuration = Some(request.changes.clone());
+                    }
+                }
+                Mutation::Keymap(request) => {
+                    // Update only known fields. Never fabricate a complete baseline.
+                    if let Some(config) = &mut entry.document.configuration {
+                        if let Some(mode) = config.modes.iter_mut().find(|m| m.mode == request.mode)
+                        {
+                            for binding in &request.keys {
+                                if let Some(key) = mode.keys.iter_mut().find(|k| {
+                                    k.role == crate::configuration::ROLES[binding.index as usize]
+                                }) {
+                                    key.action = binding.action.clone();
+                                }
+                            }
+                        } else {
+                            entry.document.configuration = None;
+                        }
+                    }
+                }
             }
             entry.document.base_token = Uuid::new_v4().to_string();
-            let config = entry.document.configuration.clone().unwrap();
-            state.journal.configurations.insert(id.clone(), config);
+            if let Some(config) = entry.document.configuration.clone() {
+                state.journal.configurations.insert(id.to_owned(), config);
+            } else {
+                state.journal.configurations.remove(id);
+            }
             let operation = &mut state
                 .journal
                 .operations
@@ -544,7 +578,7 @@ impl Runtime {
                     },
                     changes,
                 };
-                match self.accept(request, true).await {
+                match self.accept(request.into(), true).await {
                     Ok(operation) => {
                         eprintln!("Initialization accepted: {}", operation.operation_id)
                     }

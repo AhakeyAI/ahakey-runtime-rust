@@ -1,6 +1,7 @@
 use crate::{
-    configuration::{Apply, Configuration},
+    configuration::Configuration,
     error::{Error, Result},
+    mutation::Mutation,
     wire::Operation,
 };
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
-    pub request: Apply,
+    pub request: Mutation,
     pub operation: Operation,
 }
 #[derive(Clone, Serialize, Deserialize)]
