@@ -34,6 +34,8 @@ Validated on macOS with Rust 1.98.1, automated tests and the **unmodified Studio
 
 ## Quick Start
 
+For firmware integration, see the [BLE addresses, architecture and parameter guide (中文)](docs/ble-integration-guide.md).
+
 Use a Rust toolchain supporting edition 2024. Development currently targets macOS; no minimum supported toolchain is declared yet.
 
 ```sh
@@ -67,7 +69,7 @@ cargo run --locked
 
 Enable Bluetooth and grant the hosting terminal Bluetooth access. Discovery logs stable IDs such as `x1-<platform-peripheral-id>`. Use `--device-id` to select a specific device. Missing adapters/devices are retried while IPC remains available.
 
-X1 does not expose full key/light configuration readback. A real device therefore initially reports `configuration: null`; Studio correctly disables saving. To establish a baseline, supply an **explicit complete configuration** (all four modes and brightness) and select the exact device:
+The current Runtime does not implement configuration readback (newer firmware adds `0x9D`, which is not yet integrated). A real device therefore initially reports `configuration: null`; Studio correctly disables full-configuration saving. To establish a baseline, supply an **explicit complete configuration** (all four modes and brightness) and select the exact device:
 
 ```sh
 cargo run --locked -- --device-id 'x1-REPLACE_WITH_DISCOVERED_ID' --initialize /absolute/path/configuration.json

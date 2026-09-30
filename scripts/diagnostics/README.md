@@ -2,6 +2,9 @@
 
 These tools do not change keyboard mappings or firmware.
 
+Start with the [BLE integration guide (中文)](../../docs/ble-integration-guide.md)
+for service/characteristic addresses, frame layouts, Runtime architecture and firmware compatibility.
+
 For new firmware integration, Debug builds print diagnostics by default: run
 `cargo run --locked` without Studio to inspect raw BLE frames, command timing,
 state changes, and IPC outcomes. Release builds require `--debug`;

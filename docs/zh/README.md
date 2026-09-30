@@ -24,6 +24,8 @@
 
 ## 快速启动
 
+与新固件联调请先看 [蓝牙地址、内部架构与参数联调手册](../ble-integration-guide.md)。
+
 使用支持 Rust 2024 edition 的工具链。目前以 macOS 开发为主，尚未声明最低 Rust 版本。
 
 ```sh
@@ -59,7 +61,7 @@ cargo run --locked
 
 开启蓝牙，允许承载进程的终端访问蓝牙。日志会打印稳定设备 ID：`x1-<平台外设 ID>`。可以通过 `--device-id` 固定选择；未发现设备时后台重试，IPC 仍可连接。
 
-X1 无法完整回读键位和灯效。因此真实设备初次返回 `configuration: null`，Studio 禁止保存。建立可写基线需要显式提供**四个模式及全局亮度的完整配置**，并指定设备：
+当前 Runtime 尚未接入配置读回（新固件已有 `0x9D`，但客户端读取和组装尚未实现）。因此真实设备初次返回 `configuration: null`，Studio 禁止完整配置保存。建立可写基线需要显式提供**四个模式及全局亮度的完整配置**，并指定设备：
 
 ```sh
 cargo run --locked -- --device-id 'x1-替换为发现的ID' --initialize /绝对路径/configuration.json
