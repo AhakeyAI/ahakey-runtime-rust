@@ -1,22 +1,23 @@
 use super::{
     hardware::Hardware,
+    notifications::Notifications,
     state::{HardwareState, X1State},
 };
 use crate::{
     error::{Error, Result},
-    protocol::x1::{frame, valid_frame},
+    protocol::x1::frame,
 };
 use async_trait::async_trait;
 #[cfg(target_os = "macos")]
-use btleplug::api::{Central, RetrievePeripheralsOptions};
+use btleplug::api::RetrievePeripheralsOptions;
 use btleplug::{
-    api::{Characteristic, Peripheral as _, ValueNotification, WriteType, bleuuid::uuid_from_u16},
+    api::{
+        Central, CentralEvent, Characteristic, Peripheral as _, WriteType, bleuuid::uuid_from_u16,
+    },
     platform::{Adapter, Peripheral},
 };
-use futures_util::{Stream, StreamExt};
-use std::{pin::Pin, time::Duration};
-
-type Notifications = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
+use futures_util::StreamExt;
+use std::time::Duration;
 
 /// X1 alone owns its GATT session and the notification stream used to confirm commands.
 pub struct ModelX1 {
@@ -36,6 +37,7 @@ impl ModelX1 {
         }
     }
     async fn exchange(&mut self, command: &[u8]) -> Result<Vec<u8>> {
+        let mut phase = "GATT write";
         let outcome = tokio::time::timeout(Duration::from_secs(4), async {
             let characteristic = self
                 .command_char
@@ -49,32 +51,17 @@ impl ModelX1 {
                 .write(characteristic, command, WriteType::WithResponse)
                 .await
                 .map_err(|_| Error("DEVICE_DISCONNECTED"))?;
-            while let Some(notification) = notifications.next().await {
-                let data = notification.value;
-                if notification.uuid != uuid_from_u16(0x7344)
-                    || !valid_frame(&data)
-                    || data[2] != command[2]
-                {
-                    continue;
-                }
-                if command[2] == 0 {
-                    if X1State::from_bytes(&data).is_some() {
-                        return Ok(data);
-                    }
-                } else if data.len() >= 6 {
-                    return if data[3] == 0 {
-                        Ok(data)
-                    } else {
-                        Err(Error("DEVICE_REJECTED"))
-                    };
-                }
-            }
-            Err(Error("DEVICE_DISCONNECTED"))
+            phase = "protocol response";
+            notifications.response(command[2]).await
         })
         .await
         .unwrap_or(Err(Error("DEVICE_TIMEOUT")));
         // An ACK has no request ID. Never reuse a session after an uncertain exchange.
-        if outcome.is_err() {
+        if let Err(error) = &outcome {
+            eprintln!(
+                "X1 command 0x{:02x} failed during {phase}: {error}",
+                command[2]
+            );
             let _ = self.disconnect().await;
         }
         outcome
@@ -102,6 +89,17 @@ impl ModelX1 {
                 .find(|p| p.id() == id)
                 .ok_or(Error("DEVICE_NOT_READY"))?;
         }
+        let id = self.peripheral.id();
+        let disconnects = self
+            ._adapter
+            .events()
+            .await
+            .map_err(|_| Error("DEVICE_NOT_READY"))?
+            .filter_map(move |event| {
+                let disconnected = matches!(event, CentralEvent::DeviceDisconnected(ref device)
+                    | CentralEvent::DeviceServicesModified(ref device) if *device == id);
+                std::future::ready(disconnected.then_some(()))
+            });
         self.peripheral.connect().await.map_err(|error| {
             eprintln!("X1 BLE connect: {error}");
             Error("DEVICE_NOT_READY")
@@ -120,14 +118,19 @@ impl ModelX1 {
         };
         self.command_char = Some(find(0x7343)?);
         let notify = find(0x7344)?;
-        self.notifications = Some(self.peripheral.notifications().await.map_err(|error| {
-            eprintln!("X1 BLE notifications: {error}");
-            Error("DEVICE_NOT_READY")
-        })?);
+        self.notifications = Some(Notifications::new(
+            self.peripheral.notifications().await.map_err(|error| {
+                eprintln!("X1 BLE notifications: {error}");
+                Error("DEVICE_NOT_READY")
+            })?,
+            Box::pin(disconnects),
+        ));
         self.peripheral.subscribe(&notify).await.map_err(|error| {
             eprintln!("X1 BLE subscribe: {error}");
             Error("DEVICE_NOT_READY")
         })?;
+        // A valid status is sufficient for the features currently implemented.
+        // Do not gate readiness on an unused diagnostic capability query.
         self.refresh().await
     }
 }
@@ -140,9 +143,13 @@ impl Hardware for ModelX1 {
         crate::protocol::x1::configuration_commands(configuration)
     }
     async fn connect(&mut self) -> Result<HardwareState> {
-        let result = tokio::time::timeout(Duration::from_secs(15), self.open())
-            .await
-            .unwrap_or(Err(Error("DEVICE_TIMEOUT")));
+        let result = match tokio::time::timeout(Duration::from_secs(15), self.open()).await {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!("X1 connection setup exceeded 15 seconds");
+                Err(Error("DEVICE_TIMEOUT"))
+            }
+        };
         if result.is_err() {
             let _ = self.disconnect().await;
         }
@@ -161,6 +168,13 @@ impl Hardware for ModelX1 {
         X1State::from_bytes(&bytes)
             .map(|s| s.0)
             .ok_or(Error("DEVICE_INVALID_RESPONSE"))
+    }
+    async fn next_event(&mut self) -> Result<HardwareState> {
+        self.notifications
+            .as_mut()
+            .ok_or(Error("DEVICE_NOT_READY"))?
+            .next_state()
+            .await
     }
     async fn write_confirmed(&mut self, command: &[u8]) -> Result<()> {
         self.exchange(command).await?;

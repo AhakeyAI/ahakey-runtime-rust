@@ -24,7 +24,7 @@ An independently running backend for **AhaKey Studio's `Studio Frontend` target*
 | Component | Implemented scope |
 | --- | --- |
 | Device discovery | Connected-peripheral retrieval plus service-filtered active BLE scanning; one selected X1 |
-| Hardware adapter | GATT connect, status polling, serialized command/ACK exchanges, timeout session reset and reconnect |
+| Hardware adapter | GATT connect, pushed mode/status and disconnect events, serialized command/ACK exchanges, timeout session reset and reconnect |
 | Configuration | Four modes, shortcuts/macros/disabled keys, ASCII descriptions, nine state-to-light mappings, global brightness |
 | IPC | Loopback WebSocket, private discovery/token, authentication, atomic snapshot subscriptions, bounded clients/events |
 | Operations | Durable acceptance, per-device reservation, idempotency, progress, terminal records, restart recovery |

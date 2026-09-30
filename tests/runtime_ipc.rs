@@ -471,14 +471,14 @@ async fn rejects_browser_origin_wrong_token_and_unknown_mutation_fields() {
     runtime.shutdown().await;
 }
 
-struct DelayedPoll {
+struct DelayedNotification {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     writes: Arc<AtomicUsize>,
     fail: bool,
 }
 #[async_trait]
-impl Hardware for DelayedPoll {
+impl Hardware for DelayedNotification {
     fn configuration_commands(&self, configuration: &Configuration) -> Result<Vec<Vec<u8>>> {
         ahakey_runtime_rust::protocol::x1::configuration_commands(configuration)
     }
@@ -495,6 +495,9 @@ impl Hardware for DelayedPoll {
         Ok(())
     }
     async fn refresh(&mut self) -> Result<HardwareState> {
+        self.connect().await
+    }
+    async fn next_event(&mut self) -> Result<HardwareState> {
         self.started.notify_one();
         self.release.notified().await;
         if self.fail {
@@ -511,13 +514,13 @@ impl Hardware for DelayedPoll {
     }
 }
 #[tokio::test]
-async fn in_flight_poll_rechecks_baseline_before_queued_apply_can_write() {
+async fn ready_notification_rechecks_baseline_before_queued_apply_can_write() {
     for fail in [true, false] {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let writes = Arc::new(AtomicUsize::new(0));
         let (_directory, runtime) = setup(
-            Box::new(DelayedPoll {
+            Box::new(DelayedNotification {
                 started: started.clone(),
                 release: release.clone(),
                 writes: writes.clone(),
@@ -531,16 +534,14 @@ async fn in_flight_poll_rechecks_baseline_before_queued_apply_can_write() {
         tokio::time::timeout(Duration::from_secs(5), started.notified())
             .await
             .unwrap();
+        // Make the notification ready before admission yields to the worker.
+        // It must be projected before executing the newly queued write.
+        release.notify_one();
         runtime
-            .apply(apply(&document.base_token, "racing-poll"))
+            .apply(apply(&document.base_token, "racing-notification"))
             .await
             .unwrap();
-        assert_eq!(
-            runtime.configuration("test-x1").await.unwrap_err().0,
-            "BUSY"
-        );
-        release.notify_one();
-        let operation = terminal(&runtime, "racing-poll").await;
+        let operation = terminal(&runtime, "racing-notification").await;
         assert_eq!(operation.status, "failed");
         assert_eq!(operation.effect, "none");
         assert_eq!(
@@ -562,4 +563,100 @@ async fn in_flight_poll_rechecks_baseline_before_queued_apply_can_write() {
         );
         runtime.shutdown().await;
     }
+}
+
+struct NotifyingHardware {
+    events: tokio::sync::mpsc::Receiver<Result<HardwareState>>,
+    refreshes: Arc<AtomicUsize>,
+}
+#[async_trait]
+impl Hardware for NotifyingHardware {
+    fn configuration_commands(&self, configuration: &Configuration) -> Result<Vec<Vec<u8>>> {
+        ahakey_runtime_rust::protocol::x1::configuration_commands(configuration)
+    }
+    async fn connect(&mut self) -> Result<HardwareState> {
+        Ok(HardwareState {
+            work_mode: 0,
+            light_mode: 0,
+            battery: Some(82),
+            lever: Some("manual"),
+            brightness: Some(35),
+        })
+    }
+    async fn disconnect(&mut self) -> Result<()> {
+        Ok(())
+    }
+    async fn refresh(&mut self) -> Result<HardwareState> {
+        self.refreshes.fetch_add(1, Ordering::SeqCst);
+        self.connect().await
+    }
+    async fn next_event(&mut self) -> Result<HardwareState> {
+        self.events
+            .recv()
+            .await
+            .unwrap_or(Err(Error("DEVICE_DISCONNECTED")))
+    }
+    async fn write_confirmed(&mut self, _: &[u8]) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn hardware_notifications_reach_websocket_without_polling() {
+    let (sender, events) = tokio::sync::mpsc::channel(8);
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let (_directory, runtime) = setup(
+        Box::new(NotifyingHardware {
+            events,
+            refreshes: refreshes.clone(),
+        }),
+        false,
+        None,
+    )
+    .await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(ipc::serve(listener, runtime.clone(), "test-token".into()));
+    let mut client = Client::open(&endpoint).await;
+    client.hello().await;
+    client.subscribe().await;
+    sender
+        .send(Ok(HardwareState {
+            work_mode: 3,
+            light_mode: 0,
+            battery: Some(82),
+            lever: Some("manual"),
+            brightness: Some(35),
+        }))
+        .await
+        .unwrap();
+    let event = tokio::time::timeout(Duration::from_millis(500), client.receive())
+        .await
+        .expect("mode notification must reach Studio without waiting for a poll");
+    assert_eq!(event["params"]["type"], "device.changed");
+    assert_eq!(event["params"]["data"]["workMode"], 3);
+    tokio::time::sleep(Duration::from_millis(3200)).await;
+    assert_eq!(
+        refreshes.load(Ordering::SeqCst),
+        0,
+        "connected devices must not be polled"
+    );
+    sender
+        .send(Err(Error("DEVICE_DISCONNECTED")))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let event = client.receive().await;
+            if event["params"]["type"] == "device.changed" {
+                assert_eq!(event["params"]["data"]["connectionState"], "disconnected");
+                break;
+            }
+        }
+    })
+    .await
+    .expect("link loss must be reported without polling");
+    client.socket.close(None).await.unwrap();
+    server.abort();
+    runtime.shutdown().await;
 }

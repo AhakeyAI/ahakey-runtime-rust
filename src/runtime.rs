@@ -310,7 +310,7 @@ impl Runtime {
         let plan = hardware.configuration_commands(&request.changes);
         {
             let mut state = self.state.lock().await;
-            // A poll already in flight at admission can fail and invalidate the session.
+            // A notification received after admission can invalidate the session or baseline.
             let entry = &state.devices[id];
             let preflight = if let Err(error) = &plan {
                 Some(error.0)
@@ -437,15 +437,28 @@ impl Runtime {
         mut initialize: Option<Configuration>,
         simulated: bool,
     ) {
-        let mut timer = tokio::time::interval(Duration::from_secs(3));
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Retry connection failures only. Connected devices wait on notifications.
+        let mut retry = tokio::time::interval(Duration::from_secs(3));
+        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut connected = false;
         let mut seed_mock = simulated;
         loop {
             let job = tokio::select! {
                 biased;
+                event = hardware.next_event(), if connected => {
+                    match event {
+                        Ok(status) => self.publish_hardware(&id, &status).await,
+                        Err(error) => {
+                            eprintln!("Device {id}: {error}");
+                            let _ = hardware.disconnect().await;
+                            connected = false;
+                            self.disconnected(&id).await;
+                        }
+                    }
+                    continue;
+                },
                 job = receiver.recv() => match job { Some(job) => Some(job), None => break },
-                _ = timer.tick() => None,
+                _ = retry.tick(), if !connected => None,
             };
             match job {
                 Some(Job::Shutdown) => break,
@@ -462,17 +475,14 @@ impl Runtime {
                 }
                 Some(Job::Connect) | None => {
                     let wanted = self.state.lock().await.devices[&id].desired_connected;
-                    if !wanted {
+                    if !wanted || connected {
+                        if job.is_some() {
+                            self.state.lock().await.devices.get_mut(&id).unwrap().busy = false;
+                        }
                         continue;
                     }
-                    if !connected {
-                        self.set_connecting(&id).await;
-                    }
-                    let result = if connected {
-                        hardware.refresh().await
-                    } else {
-                        hardware.connect().await
-                    };
+                    self.set_connecting(&id).await;
+                    let result = hardware.connect().await;
                     match result {
                         Ok(status) => {
                             connected = true;
@@ -494,7 +504,7 @@ impl Runtime {
                     }
                 }
             }
-            // Clear only a reservation for this control job, never one admitted during polling.
+            // Clear only a reservation for this control job, never one admitted while connecting.
             if job.is_some() {
                 self.state.lock().await.devices.get_mut(&id).unwrap().busy = false;
             }

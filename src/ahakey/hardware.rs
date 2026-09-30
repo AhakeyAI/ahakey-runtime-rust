@@ -11,5 +11,10 @@ pub trait Hardware: Send {
     async fn connect(&mut self) -> Result<HardwareState>;
     async fn disconnect(&mut self) -> Result<()>;
     async fn refresh(&mut self) -> Result<HardwareState>;
+    /// Wait for a device notification; must be cancellation-safe when a control job arrives.
+    /// Static simulators may remain pending. Connected devices must also report link loss.
+    async fn next_event(&mut self) -> Result<HardwareState> {
+        std::future::pending().await
+    }
     async fn write_confirmed(&mut self, command: &[u8]) -> Result<()>;
 }
