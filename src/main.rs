@@ -16,10 +16,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut mock = false;
     let mut selected = None;
     let mut initialize_path = None;
+    let mut input_monitor = false;
+    let mut parent_stdin = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--mock" => mock = true,
+            "--input-monitor" => input_monitor = true,
+            "--parent-stdin" => parent_stdin = true,
             "--discovery" => {
                 discovery_path = PathBuf::from(
                     args.next()
@@ -36,6 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--help" | "-h" => {
                 println!(
                     "AhaKey Runtime\n  --mock                     Explicit simulated X1 (no Bluetooth)\n  --discovery ABSOLUTE_PATH  Private discovery file; default matches Studio\n  --device-id ID             Select one discovered X1\n  --initialize FILE          Explicitly overwrite all four modes and brightness on selected X1; requires --device-id\n"
+                );
+                println!(
+                    "  --input-monitor           Start the bundled HID observation helper\n  --parent-stdin            Shut down when the parent closes stdin"
                 );
                 return Ok(());
             }
@@ -98,14 +105,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             initialize,
         )))
     };
+    let input_task = if input_monitor && !mock {
+        let helper = std::env::current_exe()?.with_file_name("ahakey-input-monitor");
+        Some(tokio::spawn(ahakey_runtime_rust::input::monitor(
+            runtime.clone(),
+            helper,
+        )))
+    } else {
+        None
+    };
     let mut serving = tokio::spawn(ipc::serve(listener, runtime.clone(), token));
     tokio::select! {
         result = &mut serving => result??,
         result = shutdown_signal() => result?,
+        _ = parent_closed(), if parent_stdin => {},
     }
     serving.abort();
     let _ = serving.await;
     discovery.unpublish();
+    if let Some(task) = input_task {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(task) = discovery_task {
         task.abort();
         let _ = task.await;
@@ -121,6 +142,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(discovery);
     Ok(())
+}
+async fn parent_closed() {
+    // A dedicated thread avoids keeping Tokio's blocking pool alive on SIGTERM
+    // while the parent still owns the pipe's write end.
+    let (closed, receiver) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut input = std::io::stdin().lock();
+        let mut buffer = [0; 32];
+        while let Ok(count) = input.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+        }
+        let _ = closed.send(());
+    });
+    let _ = receiver.await;
 }
 async fn shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]

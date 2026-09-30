@@ -32,6 +32,7 @@ struct Entry {
     lighting_supported: bool,
 }
 struct State {
+    input: crate::input::InputState,
     devices: BTreeMap<String, Entry>,
     journal: Journal,
     sequence: u64,
@@ -71,6 +72,7 @@ impl Runtime {
             instance_id: Uuid::new_v4().to_string(),
             storage,
             state: Mutex::new(State {
+                input: crate::input::InputState::default(),
                 devices: BTreeMap::new(),
                 journal,
                 sequence: 0,
@@ -87,8 +89,30 @@ impl Runtime {
         let receiver = state.events.subscribe();
         let snapshot = json!({"instanceId": self.instance_id, "sequence": state.sequence.to_string(),
             "devices": state.devices.values().map(|e| &e.device).collect::<Vec<_>>(),
-            "operations": state.journal.operations.values().map(|r| &r.operation).collect::<Vec<_>>()});
+            "operations": state.journal.operations.values().map(|r| &r.operation).collect::<Vec<_>>(),
+            "input": state.input});
         (snapshot, receiver)
+    }
+    pub async fn input_message(&self, message: crate::input::InputMessage) {
+        use crate::input::InputMessage;
+        let mut state = self.state.lock().await;
+        if state.stopping {
+            return;
+        }
+        match message {
+            InputMessage::State(input) => {
+                if state.input == input {
+                    return;
+                }
+                state.input = input.clone();
+                state.emit("input.changed", json!(input));
+            }
+            InputMessage::Key(event) => {
+                if state.input.apply_key(&event) {
+                    state.emit("input.key", json!(event));
+                }
+            }
+        }
     }
     pub async fn configuration(&self, id: &str) -> Result<ConfigurationDocument> {
         let state = self.state.lock().await;
