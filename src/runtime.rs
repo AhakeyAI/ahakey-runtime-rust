@@ -60,6 +60,7 @@ impl State {
     fn invalidate(&mut self, id: &str) {
         if let Some(entry) = self.devices.get_mut(id) {
             entry.document.configuration = None;
+            entry.document.readback = None;
             entry.document.base_token = Uuid::new_v4().to_string();
         }
         self.emit("configuration.invalidated", json!({"deviceId": id}));
@@ -125,7 +126,9 @@ impl Runtime {
     pub async fn configuration(&self, id: &str) -> Result<ConfigurationDocument> {
         let state = self.state.lock().await;
         let entry = state.devices.get(id).ok_or(Error("DEVICE_NOT_FOUND"))?;
-        if entry.busy && entry.document.configuration.is_some() {
+        if entry.busy
+            && (entry.document.configuration.is_some() || entry.document.readback.is_some())
+        {
             return Err(Error("BUSY"));
         }
         Ok(entry.document.clone())
@@ -164,6 +167,7 @@ impl Runtime {
                     device_id: id.clone(),
                     base_token: Uuid::new_v4().to_string(),
                     configuration: None,
+                    readback: None,
                 },
                 sender,
                 busy: false,
@@ -316,10 +320,21 @@ impl Runtime {
         entry.device.lever = hardware.lever.map(str::to_owned);
         entry.lighting_supported = hardware.brightness.is_some();
         let device = entry.device.clone();
-        let external_change =
-            entry.document.configuration.as_ref().is_some_and(|config| {
-                Some(config.device.brightness_percent) != hardware.brightness
+        let known_brightness = entry
+            .document
+            .configuration
+            .as_ref()
+            .map(|config| config.device.brightness_percent)
+            .or_else(|| {
+                entry
+                    .document
+                    .readback
+                    .as_ref()
+                    .map(|readback| readback.device.brightness_percent)
             });
+        let external_change = known_brightness.is_some_and(|brightness| {
+            (1..=100).contains(&brightness).then_some(brightness) != hardware.brightness
+        });
         if external_change {
             state.invalidate(id);
         }
@@ -331,7 +346,8 @@ impl Runtime {
         let mut state = self.state.lock().await;
         let entry = state.devices.get_mut(id).unwrap();
         let changed = entry.device.connection_state != "disconnected"
-            || entry.document.configuration.is_some();
+            || entry.document.configuration.is_some()
+            || entry.document.readback.is_some();
         entry.device.clear("disconnected");
         entry.lighting_supported = false;
         let device = entry.device.clone();
@@ -462,6 +478,7 @@ impl Runtime {
                     }
                 }
             }
+            entry.document.readback = None;
             entry.document.base_token = Uuid::new_v4().to_string();
             if let Some(config) = entry.document.configuration.clone() {
                 state.journal.configurations.insert(id.to_owned(), config);
@@ -558,10 +575,48 @@ impl Runtime {
                         continue;
                     }
                     self.set_connecting(&id).await;
-                    let result = hardware.connect().await;
+                    let result = async {
+                        let mut status = hardware.connect().await?;
+                        let configuration = match hardware.read_configuration().await {
+                            Ok(configuration) => configuration,
+                            Err(error)
+                                if matches!(
+                                    error.0,
+                                    "UNSUPPORTED_CONFIGURATION" | "CONFIGURATION_CHANGED"
+                                ) =>
+                            {
+                                eprintln!("Device {id} configuration readback: {error}");
+                                None
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if let Some(configuration) = &configuration {
+                            // Consume the latest status after the chunk sequence,
+                            // including notifications observed during readback.
+                            status = hardware.refresh().await?;
+                            if status.brightness
+                                != (1..=100)
+                                    .contains(&configuration.device.brightness_percent)
+                                    .then_some(configuration.device.brightness_percent)
+                            {
+                                return Err(Error("CONFIGURATION_CHANGED"));
+                            }
+                        }
+                        Ok((status, configuration))
+                    }
+                    .await;
                     match result {
-                        Ok(status) => {
+                        Ok((status, configuration)) => {
                             connected = true;
+                            if let Some(configuration) = configuration {
+                                let mut state = self.state.lock().await;
+                                let entry = state.devices.get_mut(&id).unwrap();
+                                entry.document.configuration =
+                                    configuration.complete_configuration();
+                                entry.document.readback = Some(configuration);
+                                entry.document.base_token = Uuid::new_v4().to_string();
+                                state.emit("configuration.changed", json!({"deviceId": id}));
+                            }
                             self.publish_hardware(&id, &status).await;
                             if seed_mock {
                                 let mut state = self.state.lock().await;

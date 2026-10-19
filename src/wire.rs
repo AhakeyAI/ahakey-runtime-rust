@@ -1,4 +1,4 @@
-use crate::configuration::Configuration;
+use crate::configuration::{Configuration, ConfigurationReadback};
 use serde::{Deserialize, Serialize};
 
 pub const METHODS: &[&str] = &[
@@ -62,4 +62,6 @@ pub struct ConfigurationDocument {
     pub device_id: String,
     pub base_token: String,
     pub configuration: Option<Configuration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readback: Option<ConfigurationReadback>,
 }

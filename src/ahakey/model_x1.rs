@@ -26,6 +26,7 @@ pub struct ModelX1 {
     peripheral: Peripheral,
     command_char: Option<Characteristic>,
     notifications: Option<Notifications>,
+    skip_readback_once: bool,
 }
 impl ModelX1 {
     pub fn new(peripheral: Peripheral, adapter: Adapter) -> Self {
@@ -34,6 +35,7 @@ impl ModelX1 {
             peripheral,
             command_char: None,
             notifications: None,
+            skip_readback_once: false,
         }
     }
     async fn exchange(&mut self, command: &[u8]) -> Result<Vec<u8>> {
@@ -155,8 +157,7 @@ impl ModelX1 {
             eprintln!("X1 BLE subscribe: {error}");
             Error("DEVICE_NOT_READY")
         })?;
-        // A valid status is sufficient for the features currently implemented.
-        // Do not gate readiness on an unused diagnostic capability query.
+        // The worker performs optional configuration readback after this opens.
         self.refresh().await
     }
 }
@@ -219,6 +220,28 @@ impl Hardware for ModelX1 {
             .next_state()
             .await
     }
+    async fn read_configuration(
+        &mut self,
+    ) -> Result<Option<crate::configuration::ConfigurationReadback>> {
+        if std::mem::take(&mut self.skip_readback_once) {
+            return Ok(None);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(45), super::readback::read(self))
+            .await
+            .unwrap_or(Err(Error("DEVICE_TIMEOUT")));
+        match &result {
+            Err(error)
+                if matches!(
+                    error.0,
+                    "UNSUPPORTED_CONFIGURATION" | "CONFIGURATION_CHANGED"
+                ) => {}
+            Err(_) => {
+                let _ = self.disconnect().await;
+            }
+            _ => {}
+        }
+        result
+    }
     async fn write_confirmed(&mut self, command: &[u8]) -> Result<()> {
         self.exchange(command).await?;
         if command[2] == 0x85 && self.refresh().await?.brightness != Some(command[3]) {
@@ -226,5 +249,23 @@ impl Hardware for ModelX1 {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl super::readback::ReadTransport for ModelX1 {
+    async fn query(&mut self, command: &[u8]) -> Result<Vec<u8>> {
+        let result = self.exchange(command).await;
+        if command[2] == 0x9f
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(|error| matches!(error.0, "DEVICE_TIMEOUT" | "DEVICE_REJECTED"))
+        {
+            // Nonresponsive legacy capability queries need one fresh session
+            // without probing. A lost link during 0x9D still reads on reconnect.
+            self.skip_readback_once = true;
+        }
+        result
     }
 }

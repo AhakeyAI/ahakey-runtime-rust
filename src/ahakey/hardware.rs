@@ -1,5 +1,5 @@
 use super::state::HardwareState;
-use crate::configuration::Configuration;
+use crate::configuration::{Configuration, ConfigurationReadback};
 use crate::error::Result;
 use async_trait::async_trait;
 
@@ -14,6 +14,11 @@ pub trait Hardware: Send {
     async fn connect(&mut self) -> Result<HardwareState>;
     async fn disconnect(&mut self) -> Result<()>;
     async fn refresh(&mut self) -> Result<HardwareState>;
+    /// Read all observable configuration fields. None means unsupported.
+    /// The worker serializes this with writes; missing fields remain unknown.
+    async fn read_configuration(&mut self) -> Result<Option<ConfigurationReadback>> {
+        Ok(None)
+    }
     /// Wait for a device notification; must be cancellation-safe when a control job arrives.
     /// Static simulators may remain pending. Connected devices must also report link loss.
     async fn next_event(&mut self) -> Result<HardwareState> {
