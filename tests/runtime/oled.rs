@@ -3,7 +3,7 @@ use super::*;
 struct OledFault {
     inner: MockX1,
     commit_before_timeout: bool,
-    failures: Arc<AtomicUsize>,
+    failures: usize,
     calls: Arc<AtomicUsize>,
 }
 #[async_trait]
@@ -34,10 +34,8 @@ impl Hardware for OledFault {
         progress: tokio::sync::mpsc::Sender<f64>,
     ) -> Result<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let fail = self
-            .failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
+        let fail = self.failures > 0;
+        self.failures = self.failures.saturating_sub(1);
         if self.commit_before_timeout || !fail {
             self.inner
                 .upload_oled(target, asset, pause, progress)
@@ -217,7 +215,7 @@ async fn oled_lost_commit_ack_is_read_back_and_retries_stop_at_three() {
             Box::new(OledFault {
                 inner: MockX1::default(),
                 commit_before_timeout: committed,
-                failures: Arc::new(AtomicUsize::new(if committed { 1 } else { 3 })),
+                failures: if committed { 1 } else { 3 },
                 calls: calls.clone(),
             }),
             true,
