@@ -1,5 +1,7 @@
 # Rust Runtime 初版架构
 
+应用接入请先看 [WebSocket 应用开发参考](websocket-api.md)，其中汇总了当前全部接口及后续扩展。本文保留初版架构与行为说明。
+
 对接基准：AhaKey Studio 本地 `dev`，提交 `5eb399c`。以其 `StudioFrontend/Runtime/RuntimeDTOs.swift`、`IPCRuntimeClient.swift`、`docs/rust-backend-integration.md` 与 `contracts/runtime-v1` 为准。更早的宽范围 runtime-studio 设计不是本次实现的 wire 契约。
 
 ## 型号与调度边界
@@ -77,7 +79,7 @@ SIGINT/SIGTERM 停止接受 IPC、移除 discovery、停止发现，给已受理
 
 ## 限制与错误
 
-单消息 1 MiB、最多 16 个客户端、握手及认证 10 秒、发送 5 秒；每设备一个在途操作、容量 1 的 worker 队列、256 条全局事件缓存、128 条持久操作记录。不实现游标重放、取消接口、OLED 资源、预览、Hook、语音、刷机、自动安装或系统启动项。
+单消息 1 MiB、最多 16 个客户端、握手及认证 10 秒、发送 5 秒；每设备一个在途操作、容量 1 的 worker 队列、256 条全局事件缓存、128 条持久操作记录。不实现游标重放、通用取消接口、预览、Hook、语音、刷机、自动安装或系统启动项。OLED 文件接收、设备上传和专用暂停/继续已通过扩展提供，见下文。
 
 稳定错误码包括 INVALID_PARAMS、INCOMPLETE_WRITE_GROUP、PERMISSION_DENIED、PROTOCOL_MISMATCH、DEVICE_NOT_FOUND、DEVICE_NOT_READY、BUSY、BASE_CONFLICT、UNSUPPORTED_CAPABILITY、OPERATION_ID_CONFLICT、OPERATION_NOT_FOUND、DEVICE_TIMEOUT、DEVICE_DISCONNECTED、DEVICE_REJECTED、STORAGE_ERROR、RUNTIME_RESTARTED。受理前返回 JSON-RPC error；受理后通过 Operation 保存硬件失败。运行中 storage 错误不自动重试硬件写入。
 
@@ -106,3 +108,19 @@ python3 scripts/diagnostics/check-device.py 'x1-DEVICE_ID' --reconnect
 ## 独立改键扩展
 
 新增 `keymap.apply`，不受完整配置基线和亮度能力限制；共享现有 worker、操作日志和 ACK 确认。见 [改键 API](keymap-api.md)。
+
+## 基于远端固件 1.4.8 的自动读回
+
+协议依据是 [eternal-dev 的 bc4f6e4](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/bc4f6e40dc11b486af9cedba528d24844e6225a9)。`Hardware::read_configuration` 返回设备可观察的配置字段；X1 通过 `9F` 确认 bit 10，再通过 `9D` 读取已有资源 `00` 绑定、`01` 灯效、`02` 全局灯光。没有增加固件命令、资源或能力位。
+
+每次采集为 217 个资源请求。固件没有配置 revision，Runtime 在同一 worker 中保持写入串行，连续两次采集相同后发布；最多采集三次，总上限 45 秒。这是两次采集的一致性检查，不是设备原子快照；Runtime 应为唯一配置 owner。读取期间设备保持 connecting，完成后刷新状态、baseToken，发布 configuration.changed 并进入 ready。
+
+`configuration.get` 新增可选 readback，包含四模式键位、灯效、亮度和任务灯光模式。描述未被固件暴露，保持 null；当前 Action 无法表达的绑定 action 为 null，rawBinding 保留全部 100 个原始字节。完整 configuration 不由缺失字段填充生成，因此仍为 null。旧客户端可忽略 readback，完整配置保存的基线要求不变。
+
+断连、外部亮度变化和成功写入会清除旧 readback；重连重新读取。读取不写硬件、不创建持久 Operation；失败丢弃本次采集。旧固件通用 ACK 识别为不支持；能力查询超时或拒绝时重建一次不探测的会话，使基本设备功能继续可用。
+
+测试样本 `tests/fixtures/x1-readback-1.4.8.json` 来自固定远端提交中原样的 C 查询分支，在主机上编译执行，使用合成 RAM 数据生成 218 个能力/分块响应；它不是实物抓包。
+
+## CP2 OLED 上传扩展
+
+当前增加 resource.begin/finish/abort、OLED 元数据与图片上传，以及 OLED 专用暂停/继续。文件经 WebSocket 二进制块传至本地资源库；图片解码在后台线程，设备操作复用现有唯一 worker 与持久 journal。协议、能力识别、资源范围、暂停恢复及验证边界见 [OLED API](oled-api.md)。OLED 受理中/执行中的操作在进程重启后变为 paused/unknown，保留资源供用户主动继续，不会自动写入。

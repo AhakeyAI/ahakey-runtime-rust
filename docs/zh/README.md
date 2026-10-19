@@ -20,9 +20,13 @@
 | 操作 | 持久化受理、每设备独占、幂等、进度、终态与重启恢复 |
 | 模拟器 | `--mock`，独立日志，实际经过 Rust IPC 与调度器，不使用蓝牙 |
 
-已在 macOS / Rust 1.98.1 验证编译、自动测试和 **Studio dev 原有 Swift IPC 客户端联调**。已在一台 X1 真机验证发现、状态读取与 BLE 断开/重连；**配置写入和断电持久化尚未真机验证**；Windows/Linux 也未验证。OLED 资源、预览、Hook、语音、刷机和后台服务安装不在初版范围。
+已在 macOS / Rust 1.98.1 验证编译、自动测试和 **Studio dev 原有 Swift IPC 客户端联调**。已在一台 X1 真机验证发现、状态读取与 BLE 断开/重连；**配置写入和断电持久化尚未真机验证**；Windows/Linux 也未验证。已实现 CP2 资源 profile 的 OLED 图片上传、暂停与继续，真机显示、上传恢复和断电保持待验收。预览、Hook、语音、刷机和后台服务安装尚未实现。
+
+OLED 图片与 GIF 上传见 [接口文档](../oled-api.md) 和 [Node.js 示例](../../examples/oled-upload.mjs)。
 
 ## 快速启动
+
+应用开发请先看 [WebSocket 应用开发参考](../websocket-api.md)，包含发现、认证、全部 RPC 方法、事件、数据模型、错误恢复和可运行的只读客户端。
 
 与新固件联调请先看 [蓝牙地址、内部架构与参数联调手册](../ble-integration-guide.md)。
 
@@ -61,7 +65,9 @@ cargo run --locked
 
 开启蓝牙，允许承载进程的终端访问蓝牙。日志会打印稳定设备 ID：`x1-<平台外设 ID>`。可以通过 `--device-id` 固定选择；未发现设备时后台重试，IPC 仍可连接。
 
-当前 Runtime 尚未接入配置读回（新固件已有 `0x9D`，但客户端读取和组装尚未实现）。因此真实设备初次返回 `configuration: null`，Studio 禁止完整配置保存。建立可写基线需要显式提供**四个模式及全局亮度的完整配置**，并指定设备：
+Runtime 按远端 `eternal-dev` 提交 `bc4f6e4` 的固件 **1.4.8 / 协议 3.2** 实现自动读回，仅使用 capability bit 10 和 `0x9D` 已有资源 `00–02`。首次连接、重连和进程重启后读取键位、灯效、亮度及任务灯光模式，连续两次结果一致后，通过 `configuration.get` 的新增 `readback` 字段提供。
+
+该固件没有描述读回，`readback` 的描述为 `null`，完整 `configuration` 仍为 `null`，Studio 的完整保存保持禁用；独立改键可用。显式建立完整基线仍需提供**四个模式及全局亮度的完整配置**，并指定设备：
 
 ```sh
 cargo run --locked -- --device-id 'x1-替换为发现的ID' --initialize /绝对路径/configuration.json
@@ -80,7 +86,7 @@ Path('initial-configuration.json').write_text(json.dumps(source['configuration']
 PY
 ```
 
-基线仅在连续的设备会话中有效。断连、重启或发现外部亮度变化后失效，需显式初始化；后台不会自动把缓存写回设备。保存 ACK 不等于已验证断电持久化。
+完整基线和读回结果在断连、重启或发现外部亮度变化后失效。重连重新读取现有固件能提供的字段；完整基线仍需显式初始化。后台不会自动把缓存写回设备，读回来自当前 RAM。保存 ACK 不等于已验证断电持久化。
 
 ## 开发
 

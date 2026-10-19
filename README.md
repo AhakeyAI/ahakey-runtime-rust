@@ -25,16 +25,21 @@ An independently running backend for **AhaKey Studio's `Studio Frontend` target*
 | --- | --- |
 | Device discovery | Connected-peripheral retrieval plus service-filtered active BLE scanning; one selected X1 |
 | Hardware adapter | GATT connect, pushed mode/status and disconnect events, serialized command/ACK exchanges, timeout session reset and reconnect |
-| Configuration | Four modes, shortcuts/macros/disabled keys, ASCII descriptions, nine state-to-light mappings, global brightness |
+| Configuration | Four-mode writes plus automatic X1 1.4.8 readback of bindings, light mappings and global lighting; unreadable descriptions stay unknown |
+| OLED | CP2 PNG/JPEG/GIF staging, resource metadata, confirmed uploads, pause and explicit resume |
 | IPC | Loopback WebSocket, private discovery/token, authentication, atomic snapshot subscriptions, bounded clients/events |
 | Operations | Durable acceptance, per-device reservation, idempotency, progress, terminal records, restart recovery |
 | Simulator | `--mock`, separate journal, actual Rust IPC and scheduler without Bluetooth |
 
-Validated on macOS with Rust 1.98.1, automated tests and the **unmodified Studio dev Swift IPC client**. Real X1 discovery, status reads and BLE disconnect/reconnect have also been verified on one macOS device. **Real configuration writes and power-cycle persistence have not been validated.** Windows/Linux are not yet validated. This version does not implement OLED resources, previews, Hook integration, voice, firmware upgrades or a service installer.
+Validated on macOS with Rust 1.98.1, automated tests and the **unmodified Studio dev Swift IPC client**. Real X1 discovery, status reads and BLE disconnect/reconnect have also been verified on one macOS device. **Real configuration writes and power-cycle persistence have not been validated.** Windows/Linux are not yet validated. OLED uploads are implemented for the CP2 resource profile; real uploads, display orientation and power-cycle persistence remain unvalidated. This version does not implement previews, Hook integration, voice, firmware upgrades or a service installer.
 
 ## Quick Start
 
+For application developers, start with the [WebSocket API reference (中文)](docs/websocket-api.md): discovery, authentication, all RPC methods, events, data models, error recovery, and a runnable read-only client.
+
 For firmware integration, see the [BLE addresses, architecture and parameter guide (中文)](docs/ble-integration-guide.md).
+
+For image upload, see the [OLED API](docs/oled-api.md) and [Node.js upload example](examples/oled-upload.mjs).
 
 Use a Rust toolchain supporting edition 2024. Development currently targets macOS; no minimum supported toolchain is declared yet.
 
@@ -69,7 +74,9 @@ cargo run --locked
 
 Enable Bluetooth and grant the hosting terminal Bluetooth access. Discovery logs stable IDs such as `x1-<platform-peripheral-id>`. Use `--device-id` to select a specific device. Missing adapters/devices are retried while IPC remains available.
 
-The current Runtime does not implement configuration readback (newer firmware adds `0x9D`, which is not yet integrated). A real device therefore initially reports `configuration: null`; Studio correctly disables full-configuration saving. To establish a baseline, supply an **explicit complete configuration** (all four modes and brightness) and select the exact device:
+Runtime reads the existing `0x9D` resources from X1 firmware **1.4.8 / protocol 3.2**, using capability bit 10. It automatically reads bindings, light mappings, brightness and task light mode on connect, reconnect and process restart. Two matching collections are published as the additive `configuration.get` result field `readback`. This is read-only. The implementation follows [remote eternal-dev commit bc4f6e4](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/bc4f6e40dc11b486af9cedba528d24844e6225a9).
+
+That firmware does not expose descriptions. They remain unknown (`description: null` in readback), so the complete `configuration` remains `null` and Studio keeps full-configuration saving disabled. Independent key remapping remains available. To explicitly establish a full baseline, supply a **complete configuration** (all four modes and brightness) and select the exact device:
 
 ```sh
 cargo run --locked -- --device-id 'x1-REPLACE_WITH_DISCOVERED_ID' --initialize /absolute/path/configuration.json
@@ -86,7 +93,7 @@ Path('initial-configuration.json').write_text(json.dumps(source['configuration']
 PY
 ```
 
-ACK-confirmed configuration is valid only for the current uninterrupted device session. Disconnect, restart or observed external brightness changes invalidate the baseline. Reinitialization is explicit; no cached configuration is automatically written to hardware. Save ACKs do not prove persistence across power loss.
+ACK-confirmed configuration is valid only for the current uninterrupted device session. Disconnect, restart or observed external brightness changes invalidate the baseline and readback. Reconnection obtains new readback; complete baseline initialization remains explicit because descriptions cannot be read. No cached configuration is automatically written to hardware. Readback reflects live RAM, and save ACKs do not prove persistence across power loss.
 
 ## Development
 

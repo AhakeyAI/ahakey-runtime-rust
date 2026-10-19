@@ -59,7 +59,7 @@ PY
 ## 2. 源码版本与支持范围
 
 本次核对的 Rust 仓库为 `ahakey-runtime-rust` 当前工作区，包含未提交功能。
-固件参照为本机 `AhaKey-X1-hardware-source-eternal-dev` 当前工作区：
+固件依据为远端 [`eternal-dev` 固定提交 bc4f6e4](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/bc4f6e40dc11b486af9cedba528d24844e6225a9)：
 
 - `APP/sub_main/command_solve.h`：固件版本 **1.4.8**、协议 **3.2**、X1 model ID `01`。
 - 固件 `AHAKEY_PROTOCOL_3_0.md` 标题仍为 **1.4.7**；以源码常量及真机能力响应区分。
@@ -71,17 +71,17 @@ PY
 | `00` 完整状态 | 支持，附连接标志 | 自动查询并解析部分字段 |
 | `73` 绑定/描述，`84` 灯效表，`85` 亮度，`04` 保存 | 支持 | 已编码并串行确认 |
 | `9B` 模式通知 | 支持 | 被动接收并更新模式；不主动轮询 |
-| `9F` 版本/能力/model 查询 | 支持 | 连接时不发送，无专用解析/IPC 方法 |
-| `9D` 配置分块读取 | 支持 | **尚未实现读取和组装** |
+| `9F` 版本/能力/model 查询 | 支持 | 每次连接后查询，检查 bit 10；无单独 IPC 方法 |
+| `9D` 配置分块读取 | 支持，资源 00–02 | 已实现，连接后自动读取；通过 configuration.get.readback 提供 |
 | 状态帧连接 flags | 支持 | 原始日志可见，尚未投影到 Device DTO |
 | `92` 设置当前模式 | 支持 | 尚无对应 IPC 方法 |
 | `95` 待机、`98/99/9A` 任务灯光 | 支持 | 尚无对应 IPC 方法 |
 | GIF 上传/布局查询、USB 配置传输 | 固件存在相关实现 | 当前 Rust 未接入 |
 | 临时插件接管 | 本文不认定已有该能力 | 仍为设计草案 |
 
-因此当前 `configuration.get` 返回的是 Runtime 的会话内已知配置，不会触发
-`9D` 蓝牙读回。新固件增加 `9D` 后仍可能返回 `configuration:null`。
-这不是设备配置丢失。旧文档中的“无读回”应理解为旧固件/当前 Runtime 的限制。
+`configuration.get` 返回 Runtime 缓存：已读到的设备字段通过可选 `readback` 提供。
+该方法自身不触发新的 BLE 查询。描述没有读回资源，因此完整 `configuration`
+仍可能为 null；Runtime 不用空描述填充完整基线。
 
 另一个重要差异：当前 eternal-dev 的物理 Voice Key（索引 0）在默认 SDK 未接管时
 固定输出 **F18 / HID usage `6D`**，不按普通 `user_key_bind` 决定输出。
@@ -256,11 +256,11 @@ Runtime 要求总长9、status=0、mode<4、source<=2，且已有初始状态，
 sequence 为单字节，可从255回到0；不能按无限递增数字比较。当前 Runtime 按到达
 顺序处理，不用 sequence 去重，也不做缺帧补查。
 
-## 6. 新固件扩展：尚未接入 Runtime 的部分
+## 6. 固件扩展与 Runtime 自动读回
 
-下面供固件/协议实现对照，**不是现有 IPC 的可调用方法**。当前调试开关只观察正常
-通信，不会自动发这些查询。独立 BLE 工具测试时先退出 Runtime；后续在 Runtime
-中接入必须复用同一个 worker 和通知消费者。
+以下为实际固件报文格式；`9F` 和 `9D` 已在 Runtime 连接流程中使用，其他命令
+仍以支持表为准，并非同名 IPC 方法。调试开关本身不增加查询。所有通信复用
+同一个 worker 和通知消费者。
 
 ### `9F` 版本与能力查询
 
@@ -276,7 +276,8 @@ capabilities=`0x000007FF`（4字节小端）、model=1。
 9..12 capabilities LE32、13固件patch、14 model、15..16帧尾。
 当前定义的能力位0..10依次为：待机设置、恢复出厂、旧Voice配置、永不关机待机值、
 任务灯光模式、任务槽、GIF布局、模式同步、设备型号、连接flags、配置读回。
-兼容旧设备时必须检查响应长度，不能把通用成功 ACK 当作能力响应。
+Runtime 检查协议主版本、X1 model 和 bit 10。通用成功 ACK 识别为不支持，
+不会发送 `9D`。能力查询超时/拒绝后重建一次不探测的会话，基本功能继续可用。
 
 ### `9D` 配置分块读取
 
@@ -295,8 +296,12 @@ capabilities=`0x000007FF`（4字节小端）、model=1。
 每块最多8数据字节，整帧最多19字节。组装时校验 resource/index/total/offset/count，
 收齐再解析；绑定前两字节为 subtype 和有效 payload 长度。
 源码读的是当前 RAM 的 `key_bund` 等设置，并不是独立读 Flash 验证已经掉电保存。
-没有跨块快照版本，读期间应禁止写入并保持单一 owner，防止混合新旧配置。
-资源未包含按键描述，所以单靠该查询也不能无损构造当前完整 Configuration。
+远端没有跨块版本号和描述资源。Runtime 保持单 worker，连续两次完整采集结果
+一致后发布，最多采集三次，总上限45秒。每次217个资源请求，稳定路径共435次
+交换（含一次能力查询）。这是采集结果比对，不是设备原子快照；应保持单一配置
+owner。描述为null，无法表达的绑定action为null并保留100字节rawBinding。
+完整Configuration基线仍需显式建立。断连、观测到外部亮度变化和成功写入清除
+旧readback，重连重新读取。不发送资源03/04，不要求bit11/12。
 
 ### 其他常用扩展
 
@@ -362,7 +367,8 @@ completed 表示全部达到现有确认规则；仍要实测按键输出和断�
 | 主动扫描等待 | 3秒 | `protocol/ble.rs::find_x1` |
 | 未发现设备后重试 | 10秒 | `protocol/ble.rs::discover` |
 | 断连后连接重试 tick | 3秒 | `runtime.rs::worker` |
-| 完整连接建立超时 | 15秒 | `ModelX1::connect` |
+| GATT连接建立超时 | 15秒 | `ModelX1::connect` |
+| 自动读回总上限 | 45秒；最多采集3次 | `ModelX1::read_configuration` |
 | 单命令写入+响应总超时 | 4秒 | `ModelX1::exchange` |
 | 断开超时 | 3秒 | `ModelX1::disconnect` |
 | 已确认配置命令后间隔 | 50毫秒 | `ModelX1::write_confirmed` |
@@ -414,7 +420,7 @@ cargo run --locked --example runtime-keymap -- --device-id 'x1-REPLACE_WITH_ID' 
 | 大查询超时但00正常 | 固件是否因超过MTU-3丢弃通知；当前没有通知分片重组 |
 | 模式/拨杆不更新 | 是否真的发00/9B、9B是否9字节、mode/source是否合法 |
 | 非零ACK变成DEVICE_REJECTED | 从ble.rx读取原始status，不能只看统一Runtime错误码 |
-| 读配置仍为null | Runtime尚未接9D；configuration.get不是读取设备Flash |
+| configuration仍为null | 看readback是否已有数据；远端未暴露描述，完整基线不自动生成 |
 | 改Voice键ACK成功但仍F18 | 检查raw-F18固件分支的固定索引0逻辑 |
 | 接口返回UNSUPPORTED_CAPABILITY | 区分未知IPC方法、缺GATT特征、无有效亮度及亮度回读不一致 |
 | 超时后结果unknown | 可能已执行部分命令，按operationId核对，不自动重发 |
