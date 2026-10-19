@@ -9,6 +9,13 @@ pub const METHODS: &[&str] = &[
     "operation.get",
     "device.connect",
     "device.disconnect",
+    "resource.begin",
+    "resource.finish",
+    "resource.abort",
+    "oled.get",
+    "oled.upload",
+    "operation.pause",
+    "operation.resume",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 const MAX_OPERATIONS: usize = 128;
@@ -23,6 +23,8 @@ enum Job {
     Connect,
     Disconnect,
     Apply(Mutation),
+    ReadOled(oneshot::Sender<Result<crate::ahakey::oled::State>>),
+    ResumeOled(crate::oled::Upload),
     Shutdown,
 }
 struct Entry {
@@ -32,6 +34,7 @@ struct Entry {
     busy: bool,
     desired_connected: bool,
     lighting_supported: bool,
+    upload_pause: Option<(String, watch::Sender<bool>)>,
 }
 struct State {
     input: crate::input::InputState,
@@ -72,9 +75,11 @@ pub struct Runtime {
     state: Mutex<State>,
     storage: Storage,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub resources: crate::oled::Resources,
 }
 impl Runtime {
     pub async fn open(path: std::path::PathBuf) -> Result<Arc<Self>> {
+        let resources = crate::oled::Resources::new(path.with_extension("resources"))?;
         let (storage, journal) = Storage::open(path).await?;
         let (events, _) = broadcast::channel(256);
         Ok(Arc::new(Self {
@@ -90,6 +95,7 @@ impl Runtime {
                 stopping: false,
             }),
             workers: Mutex::new(vec![]),
+            resources,
         }))
     }
     pub async fn subscribe(&self) -> (Value, broadcast::Receiver<Event>) {
@@ -173,6 +179,7 @@ impl Runtime {
                 busy: false,
                 desired_connected: true,
                 lighting_supported: false,
+                upload_pause: None,
             },
         );
         state.emit("device.changed", json!(projection));
@@ -211,6 +218,138 @@ impl Runtime {
     }
     pub async fn apply_keymap(&self, request: KeymapApply) -> Result<Operation> {
         self.accept(request.into(), false).await
+    }
+    pub async fn oled_state(&self, id: &str) -> Result<crate::ahakey::oled::State> {
+        let (send, receive) = oneshot::channel();
+        {
+            let mut state = self.state.lock().await;
+            if state.stopping {
+                return Err(Error("RUNTIME_STOPPING"));
+            }
+            let entry = state.devices.get_mut(id).ok_or(Error("DEVICE_NOT_FOUND"))?;
+            if entry.device.connection_state != "ready" {
+                return Err(Error("DEVICE_NOT_READY"));
+            }
+            if entry.busy {
+                return Err(Error("BUSY"));
+            }
+            entry
+                .sender
+                .try_send(Job::ReadOled(send))
+                .map_err(|_| Error("BUSY"))?;
+            entry.busy = true;
+        }
+        receive.await.map_err(|_| Error("DEVICE_DISCONNECTED"))?
+    }
+    pub async fn upload_oled(&self, request: crate::oled::Upload) -> Result<Operation> {
+        request.validate()?;
+        {
+            let state = self.state.lock().await;
+            if let Some(record) = state.journal.operations.get(&request.operation_id) {
+                return if record.request == Mutation::Oled(request.clone()) {
+                    Ok(record.operation.clone())
+                } else {
+                    Err(Error("OPERATION_ID_CONFLICT"))
+                };
+            }
+        }
+        let asset = self.resources.load(&request.resource_id).await?;
+        if asset.info.frame_count > request.target.max_frames() {
+            return Err(Error("TOO_MANY_FRAMES"));
+        }
+        self.accept(Mutation::Oled(request), false).await
+    }
+    pub async fn pause_operation(&self, id: &str) -> Result<Operation> {
+        let state = self.state.lock().await;
+        let record = state
+            .journal
+            .operations
+            .get(id)
+            .ok_or(Error("OPERATION_NOT_FOUND"))?;
+        if !matches!(record.request, Mutation::Oled(_)) {
+            return Err(Error("UNSUPPORTED_CAPABILITY"));
+        }
+        if record.operation.status == "paused" || record.operation.terminal() {
+            return Ok(record.operation.clone());
+        }
+        let entry = &state.devices[&record.operation.device_id];
+        if let Some((active_id, signal)) = &entry.upload_pause
+            && active_id == id
+        {
+            signal.send_replace(true);
+        }
+        Ok(record.operation.clone())
+    }
+    pub async fn resume_operation(&self, id: &str) -> Result<Operation> {
+        let mut state = self.state.lock().await;
+        let record = state
+            .journal
+            .operations
+            .get(id)
+            .ok_or(Error("OPERATION_NOT_FOUND"))?;
+        let Mutation::Oled(request) = &record.request else {
+            return Err(Error("UNSUPPORTED_CAPABILITY"));
+        };
+        if record.operation.status != "paused" {
+            if matches!(
+                record.operation.status.as_str(),
+                "accepted" | "running" | "completed"
+            ) {
+                return Ok(record.operation.clone());
+            }
+            return Err(Error("OPERATION_NOT_PAUSED"));
+        }
+        let request = request.clone();
+        if state.stopping {
+            return Err(Error("RUNTIME_STOPPING"));
+        }
+        if !state.storage_healthy {
+            return Err(Error("STORAGE_ERROR"));
+        }
+        let entry = state
+            .devices
+            .get_mut(&request.device_id)
+            .ok_or(Error("DEVICE_NOT_FOUND"))?;
+        if entry.device.connection_state != "ready" {
+            return Err(Error("DEVICE_NOT_READY"));
+        }
+        if entry.busy {
+            return Err(Error("BUSY"));
+        }
+        entry.busy = true;
+        let (signal, _) = watch::channel(false);
+        entry.upload_pause = Some((id.to_owned(), signal));
+        let sender = entry.sender.clone();
+        let operation = &mut state.journal.operations.get_mut(id).unwrap().operation;
+        operation.status = "accepted".into();
+        operation.error_code = None;
+        let operation = operation.clone();
+        if self.storage.save(&state.journal).await.is_err() {
+            state.storage_healthy = false;
+            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+            state
+                .journal
+                .operations
+                .get_mut(id)
+                .unwrap()
+                .operation
+                .status = "paused".into();
+            return Err(Error("STORAGE_ERROR"));
+        }
+        if sender.try_send(Job::ResumeOled(request.clone())).is_err() {
+            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+            state
+                .journal
+                .operations
+                .get_mut(id)
+                .unwrap()
+                .operation
+                .status = "paused".into();
+            self.storage.save(&state.journal).await?;
+            return Err(Error("DEVICE_NOT_READY"));
+        }
+        state.emit("operation.changed", json!(operation));
+        Ok(operation)
     }
     async fn accept(&self, mut request: Mutation, initialize: bool) -> Result<Operation> {
         request.validate()?;
@@ -258,6 +397,10 @@ impl Runtime {
             }
         }
         let sender = entry.sender.clone();
+        if matches!(request, Mutation::Oled(_)) {
+            let (signal, _) = watch::channel(false);
+            entry.upload_pause = Some((request.operation_id().to_owned(), signal));
+        }
         entry.busy = true;
         let operation = Operation {
             operation_id: request.operation_id().to_owned(),
@@ -272,6 +415,7 @@ impl Runtime {
             Record {
                 request: request.clone(),
                 operation: operation.clone(),
+                oled_transaction: false,
             },
         );
         if self.storage.save(&state.journal).await.is_err() {
@@ -364,11 +508,16 @@ impl Runtime {
         state.emit("device.changed", json!(device));
     }
     async fn execute_apply(&self, hardware: &mut dyn Hardware, request: &Mutation) {
+        if let Mutation::Oled(upload) = request {
+            self.execute_oled(hardware, upload, false).await;
+            return;
+        }
         let id = request.device_id();
         let operation_id = request.operation_id();
         let plan = match request {
             Mutation::Configuration(config) => hardware.configuration_commands(&config.changes),
             Mutation::Keymap(keys) => hardware.keymap_commands(keys),
+            Mutation::Oled(_) => unreachable!(),
         };
         {
             let mut state = self.state.lock().await;
@@ -477,6 +626,7 @@ impl Runtime {
                         }
                     }
                 }
+                Mutation::Oled(_) => unreachable!(),
             }
             entry.document.readback = None;
             entry.document.base_token = Uuid::new_v4().to_string();
@@ -522,6 +672,202 @@ impl Runtime {
         }
         state.emit("operation.changed", json!(operation));
     }
+    async fn execute_oled(
+        &self,
+        hardware: &mut dyn Hardware,
+        request: &crate::oled::Upload,
+        resumed: bool,
+    ) {
+        let id = &request.device_id;
+        let operation_id = &request.operation_id;
+        let pause = {
+            let mut state = self.state.lock().await;
+            let entry = state.devices.get_mut(id).unwrap();
+            let error = if entry.device.connection_state != "ready" {
+                Some("DEVICE_NOT_READY")
+            } else if !resumed && entry.document.base_token != request.base_token {
+                Some("BASE_CONFLICT")
+            } else {
+                None
+            };
+            if let Some(code) = error {
+                entry.busy = false;
+                entry.upload_pause = None;
+                let operation = &mut state
+                    .journal
+                    .operations
+                    .get_mut(operation_id)
+                    .unwrap()
+                    .operation;
+                operation.status = if resumed { "paused" } else { "failed" }.into();
+                operation.error_code = Some(code.into());
+                let event = json!(operation);
+                if self.storage.save(&state.journal).await.is_err() {
+                    state.storage_healthy = false;
+                }
+                state.emit("operation.changed", event);
+                return;
+            }
+            let pause = entry.upload_pause.as_ref().unwrap().1.subscribe();
+            let operation = &mut state
+                .journal
+                .operations
+                .get_mut(operation_id)
+                .unwrap()
+                .operation;
+            operation.status = "running".into();
+            operation.effect = "unknown".into();
+            operation.progress = 0.0;
+            let event = json!(operation);
+            state.emit("operation.changed", event);
+            pause
+        };
+        let result = async {
+                let asset = self.resources.load(&request.resource_id).await?;
+                hardware.oled_state().await?;
+                if *pause.borrow() { return Err(Error("UPLOAD_PAUSED")); }
+                {
+                    let mut state = self.state.lock().await;
+                    state.journal.operations.get_mut(operation_id).unwrap().oled_transaction = true;
+                    if self.storage.save(&state.journal).await.is_err() {
+                        state.storage_healthy = false;
+                        return Err(Error("STORAGE_ERROR"));
+                    }
+                }
+                let (progress, mut updates) = mpsc::channel(4);
+                let upload = self.transfer_oled(hardware, request, &asset, pause, progress);
+                tokio::pin!(upload);
+                loop {
+                    tokio::select! {
+                        result = &mut upload => break result,
+                        Some(progress) = updates.recv() => {
+                            let mut state = self.state.lock().await;
+                            let operation = &mut state.journal.operations.get_mut(operation_id).unwrap().operation;
+                            operation.progress = progress;
+                            operation.effect = "partial".into();
+                            let event = json!(operation);
+                            state.emit("operation.changed", event);
+                        }
+                    }
+                }
+        }.await;
+        // The firmware aborts the connection-owned upload when its link closes.
+        // The worker reconnects and queries the device before advertising ready.
+        if result.is_err() {
+            let _ = hardware.disconnect().await;
+            self.disconnected(id).await;
+        }
+        let mut state = self.state.lock().await;
+        let armed = state.journal.operations[operation_id].oled_transaction;
+        let operation = &mut state
+            .journal
+            .operations
+            .get_mut(operation_id)
+            .unwrap()
+            .operation;
+        match result {
+            Ok(()) => {
+                operation.status = "completed".into();
+                operation.progress = 1.0;
+                operation.effect = "complete".into();
+                operation.error_code = None;
+            }
+            Err(error) => {
+                let rejected = matches!(
+                    error.0,
+                    "UNSUPPORTED_CAPABILITY"
+                        | "TOO_MANY_FRAMES"
+                        | "RESOURCE_NOT_FOUND"
+                        | "RESOURCE_CORRUPT"
+                );
+                operation.status = if rejected { "failed" } else { "paused" }.into();
+                operation.effect = if !armed { "none" } else { "unknown" }.into();
+                if !armed && error.0 != "UPLOAD_PAUSED" {
+                    operation.status = "failed".into();
+                }
+                operation.error_code = Some(error.0.into());
+            }
+        }
+        if self.storage.save(&state.journal).await.is_err() {
+            state.storage_healthy = false;
+            let operation = &mut state
+                .journal
+                .operations
+                .get_mut(operation_id)
+                .unwrap()
+                .operation;
+            operation.status = "paused".into();
+            operation.effect = "unknown".into();
+            operation.error_code = Some("STORAGE_ERROR".into());
+        }
+        let entry = state.devices.get_mut(id).unwrap();
+        entry.busy = false;
+        entry.upload_pause = None;
+        let operation = state.journal.operations[operation_id].operation.clone();
+        if operation.status == "completed" {
+            state.devices.get_mut(id).unwrap().document.base_token = Uuid::new_v4().to_string();
+            state.emit("oled.changed", json!({"deviceId": id, "target": request.target, "resourceId": request.resource_id}));
+        }
+        state.emit("operation.changed", json!(operation));
+    }
+    async fn transfer_oled(
+        &self,
+        hardware: &mut dyn Hardware,
+        request: &crate::oled::Upload,
+        asset: &crate::oled::Prepared,
+        pause: watch::Receiver<bool>,
+        progress: mpsc::Sender<f64>,
+    ) -> Result<()> {
+        for attempt in 0..3 {
+            let failure = match hardware
+                .upload_oled(&request.target, asset, pause.clone(), progress.clone())
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error) if error.0 == "UPLOAD_PAUSED" || *pause.borrow() => {
+                    return Err(Error("UPLOAD_PAUSED"));
+                }
+                Err(error) => error,
+            };
+            if matches!(failure.0, "UNSUPPORTED_CAPABILITY" | "TOO_MANY_FRAMES") {
+                return Err(failure);
+            }
+            // A lost ACK may hide a successful commit. Reconnect and read first;
+            // an unreadable result stops here, rather than blindly resending.
+            let _ = hardware.disconnect().await;
+            self.disconnected(&request.device_id).await;
+            self.set_connecting(&request.device_id).await;
+            let status = hardware.connect().await?;
+            let actual = hardware.oled_state().await?;
+            let entry = actual
+                .entries
+                .iter()
+                .find(|entry| entry.target == request.target)
+                .ok_or(Error("DEVICE_INVALID_RESPONSE"))?;
+            if actual
+                .entries
+                .iter()
+                .any(|entry| entry.write_state == "writing")
+            {
+                return Err(Error("RESOURCE_RECOVERY_PENDING"));
+            }
+            self.publish_hardware(&request.device_id, &status).await;
+            if entry.valid
+                && entry.frame_count == asset.info.frame_count
+                && entry.byte_length as usize == asset.info.byte_length
+                && entry.crc32 == asset.info.crc32
+            {
+                return Ok(());
+            }
+            if *pause.borrow() {
+                return Err(Error("UPLOAD_PAUSED"));
+            }
+            if attempt == 2 {
+                return Err(failure);
+            }
+        }
+        unreachable!("bounded attempts return after the final readback")
+    }
     async fn worker(
         self: Arc<Self>,
         id: String,
@@ -535,6 +881,14 @@ impl Runtime {
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut connected = false;
         let mut seed_mock = simulated;
+        let mut recover_oled = self
+            .state
+            .lock()
+            .await
+            .journal
+            .operations
+            .values()
+            .any(|record| record.operation.device_id == id && record.needs_oled_recovery());
         loop {
             let job = tokio::select! {
                 biased;
@@ -557,8 +911,37 @@ impl Runtime {
                 Some(Job::Shutdown) => break,
                 Some(Job::Apply(request)) => {
                     self.execute_apply(hardware.as_mut(), &request).await;
+                    if matches!(request, Mutation::Oled(_)) {
+                        recover_oled = self.state.lock().await.journal.operations
+                            [request.operation_id()]
+                        .needs_oled_recovery();
+                    }
                     connected =
                         self.state.lock().await.devices[&id].device.connection_state == "ready";
+                    continue;
+                }
+                Some(Job::ResumeOled(request)) => {
+                    self.execute_oled(hardware.as_mut(), &request, true).await;
+                    recover_oled = self.state.lock().await.journal.operations
+                        [&request.operation_id]
+                        .needs_oled_recovery();
+                    connected =
+                        self.state.lock().await.devices[&id].device.connection_state == "ready";
+                    continue;
+                }
+                Some(Job::ReadOled(reply)) => {
+                    let result = hardware.oled_state().await;
+                    if result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| error.0 != "UNSUPPORTED_CAPABILITY")
+                    {
+                        let _ = hardware.disconnect().await;
+                        connected = false;
+                        self.disconnected(&id).await;
+                    }
+                    self.state.lock().await.devices.get_mut(&id).unwrap().busy = false;
+                    let _ = reply.send(result);
                     continue;
                 }
                 Some(Job::Disconnect) => {
@@ -577,6 +960,16 @@ impl Runtime {
                     self.set_connecting(&id).await;
                     let result = async {
                         let mut status = hardware.connect().await?;
+                        if recover_oled {
+                            let screen = hardware.oled_state().await?;
+                            if screen
+                                .entries
+                                .iter()
+                                .any(|entry| entry.write_state == "writing")
+                            {
+                                return Err(Error("RESOURCE_RECOVERY_PENDING"));
+                            }
+                        }
                         let configuration = match hardware.read_configuration().await {
                             Ok(configuration) => configuration,
                             Err(error)
@@ -608,6 +1001,7 @@ impl Runtime {
                     match result {
                         Ok((status, configuration)) => {
                             connected = true;
+                            recover_oled = false;
                             if let Some(configuration) = configuration {
                                 let mut state = self.state.lock().await;
                                 let entry = state.devices.get_mut(&id).unwrap();
@@ -666,6 +1060,11 @@ impl Runtime {
         let senders = {
             let mut state = self.state.lock().await;
             state.stopping = true;
+            for entry in state.devices.values() {
+                if let Some((_, pause)) = &entry.upload_pause {
+                    pause.send_replace(true);
+                }
+            }
             state
                 .devices
                 .values()

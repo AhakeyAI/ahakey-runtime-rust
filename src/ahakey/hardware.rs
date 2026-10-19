@@ -6,6 +6,18 @@ use async_trait::async_trait;
 /// Called exclusively by one device worker: there is never more than one ACK in flight.
 #[async_trait]
 pub trait Hardware: Send {
+    async fn oled_state(&mut self) -> Result<super::oled::State> {
+        Err(crate::error::Error("UNSUPPORTED_CAPABILITY"))
+    }
+    async fn upload_oled(
+        &mut self,
+        _target: &crate::oled::Target,
+        _asset: &crate::oled::Prepared,
+        _pause: tokio::sync::watch::Receiver<bool>,
+        _progress: tokio::sync::mpsc::Sender<f64>,
+    ) -> Result<()> {
+        Err(crate::error::Error("UNSUPPORTED_CAPABILITY"))
+    }
     /// Encoding belongs to the concrete model, never to the IPC or runtime scheduler.
     fn configuration_commands(&self, configuration: &Configuration) -> Result<Vec<Vec<u8>>>;
     fn keymap_commands(&self, _request: &crate::keymap::KeymapApply) -> Result<Vec<Vec<u8>>> {

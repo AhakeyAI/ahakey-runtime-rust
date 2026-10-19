@@ -7,6 +7,7 @@ pub mod input;
 pub mod ipc;
 pub mod keymap;
 pub mod mutation;
+pub mod oled;
 pub mod protocol;
 pub mod runtime;
 pub mod storage;

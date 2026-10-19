@@ -1,0 +1,16 @@
+{
+  "source": "https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/70ca334f65d73b6a2f20a0598e55c6da59f26526",
+  "sourceSha256": {
+    "APP/sub_main/command_solve.c": "4623ffe1f7d752a74dfd535b19af18ca2324222f5dde889dc7a61ea441aa2756",
+    "APP/services/resource_map.c": "206025286822de216dc5aeae6d27d3844e3e58175d1c4bb4d48de9a82a8b39f1",
+    "APP/services/resource_upload_transaction.c": "3707922380c827fd0160185935faa4b8d4b0539959fb71b11a9d0763c54d6887"
+  },
+  "capture": "Host execution of unchanged remote resource_map.c and resource_upload_transaction.c; synthetic zero-filled frame; wire layout from command_solve.c. Not a physical-device capture.",
+  "crc32": 510799585,
+  "frameBytes": 28672,
+  "entry": 8,
+  "begin": "aabb8a08007000000100e12e721eccdd",
+  "firstChunk": "aabb8b080000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ccdd",
+  "lastChunk": "aabb8b08f06f00001000000000000000000000000000000000ccdd",
+  "commit": "aabb8c08ccdd"
+}

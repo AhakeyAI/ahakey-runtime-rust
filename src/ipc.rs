@@ -63,6 +63,11 @@ struct OperationParams {
     operation_id: String,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FinishResource {
+    upload_id: Uuid,
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Subscribe {
     topics: Vec<String>,
@@ -127,6 +132,7 @@ async fn session(
     )
     .await??;
     let mut authenticated = false;
+    let mut transfer: Option<crate::oled::Transfer> = None;
     let mut subscription: Option<(String, broadcast::Receiver<Event>)> = None;
     let auth_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -148,6 +154,19 @@ async fn session(
                 let Some(message) = message else { break; };
                 let text = match message? {
                     Message::Text(text) => text,
+                    Message::Binary(bytes) => {
+                        let result = if authenticated {
+                            transfer.as_mut().ok_or(Error("RESOURCE_UPLOAD_NOT_FOUND")).and_then(|upload| upload.append(&bytes))
+                        } else { Err(Error("PERMISSION_DENIED")) };
+                        let reply = match result {
+                            Ok(received) => json!({"jsonrpc":"2.0", "method":"resource.progress", "params": {
+                                "uploadId":transfer.as_ref().unwrap().id, "receivedBytes":received}}),
+                            Err(error) => json!({"jsonrpc":"2.0", "method":"resource.error", "params": {
+                                "uploadId":transfer.as_ref().map(|upload| upload.id), "code":error.0}}),
+                        };
+                        tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Text(reply.to_string().into()))).await??;
+                        continue;
+                    },
                     Message::Close(_) => break,
                     Message::Ping(_) | Message::Pong(_) => { socket.flush().await?; continue; },
                     _ => break,
@@ -179,10 +198,12 @@ async fn session(
                                 let _requested_minor = hello.protocol.minor;
                                 authenticated = true;
                                 Ok(json!({"protocol":{"major":1,"minor":0}, "instanceId":runtime.instance_id,
-                                    "runtimeVersion":env!("CARGO_PKG_VERSION"), "methods":METHODS}))
+                                    "runtimeVersion":env!("CARGO_PKG_VERSION"), "methods":METHODS,
+                                    "limits":{"messageBytes":MAX_MESSAGE_BYTES,"resourceBytes":crate::oled::MAX_SOURCE_BYTES,
+                                        "resourceChunkBytes":crate::oled::MAX_CHUNK_BYTES}}))
                             }
                         }
-                        Ok(_) => { authenticated = false; subscription = None; Err(Error("PERMISSION_DENIED")) },
+                        Ok(_) => { authenticated = false; subscription = None; transfer = None; Err(Error("PERMISSION_DENIED")) },
                         Err(error) => Err(error),
                     }
                 } else if !authenticated { Err(Error("PERMISSION_DENIED")) }
@@ -195,6 +216,39 @@ async fn session(
                             Ok(json!({"subscriptionId":id,"snapshot":snapshot}))
                         }
                         _ => Err(Error("INVALID_PARAMS")),
+                    }
+                } else if request.method == "resource.begin" {
+                    if transfer.is_some() { Err(Error("BUSY")) }
+                    else {
+                        match decode(request.params).and_then(crate::oled::Transfer::begin) {
+                            Ok(upload) => {
+                                let response = json!({"uploadId":upload.id,"chunkBytes":crate::oled::MAX_CHUNK_BYTES});
+                                transfer = Some(upload);
+                                Ok(response)
+                            },
+                            Err(error) => Err(error),
+                        }
+                    }
+                } else if request.method == "resource.finish" {
+                    match decode::<FinishResource>(request.params) {
+                        Ok(params) => {
+                            if transfer.as_ref().is_some_and(|t| t.id == params.upload_id && t.total > 0) {
+                                match transfer.take().unwrap().complete(params.upload_id) {
+                                    Ok((bytes, hash)) => runtime.resources.finish(bytes, hash).await.map(|resource| json!(resource)),
+                                    Err(error) => Err(error),
+                                }
+                            } else { Err(Error("RESOURCE_UPLOAD_NOT_FOUND")) }
+                        },
+                        Err(error) => Err(error),
+                    }
+                } else if request.method == "resource.abort" {
+                    match decode::<FinishResource>(request.params) {
+                        Ok(params) if transfer.as_ref().is_some_and(|t| t.id == params.upload_id) => {
+                            transfer = None;
+                            Ok(json!({}))
+                        },
+                        Ok(_) => Err(Error("RESOURCE_UPLOAD_NOT_FOUND")),
+                        Err(error) => Err(error),
                     }
                 } else { dispatch(&runtime, &request.method, request.params).await };
                 crate::debug::event("ipc.request", || json!({
@@ -225,6 +279,23 @@ async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> Result<Valu
         "configuration.get" => {
             let params: DeviceParams = decode(params)?;
             Ok(json!(runtime.configuration(&params.device_id).await?))
+        }
+        "oled.get" => {
+            let params: DeviceParams = decode(params)?;
+            Ok(json!(runtime.oled_state(&params.device_id).await?))
+        }
+        "oled.upload" => {
+            let operation = runtime.upload_oled(decode(params)?).await?;
+            Ok(json!({"operationId":operation.operation_id,"status":operation.status}))
+        }
+        "operation.pause" | "operation.resume" => {
+            let params: OperationParams = decode(params)?;
+            let operation = if method == "operation.pause" {
+                runtime.pause_operation(&params.operation_id).await?
+            } else {
+                runtime.resume_operation(&params.operation_id).await?
+            };
+            Ok(json!(operation))
         }
         "operation.get" => {
             let params: OperationParams = decode(params)?;

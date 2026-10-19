@@ -163,6 +163,18 @@ impl ModelX1 {
 }
 #[async_trait]
 impl Hardware for ModelX1 {
+    async fn oled_state(&mut self) -> Result<super::oled::State> {
+        super::oled::state(self).await
+    }
+    async fn upload_oled(
+        &mut self,
+        target: &crate::oled::Target,
+        asset: &crate::oled::Prepared,
+        pause: tokio::sync::watch::Receiver<bool>,
+        progress: tokio::sync::mpsc::Sender<f64>,
+    ) -> Result<()> {
+        super::oled::upload(self, target, asset, pause, progress).await
+    }
     fn configuration_commands(
         &self,
         configuration: &crate::configuration::Configuration,

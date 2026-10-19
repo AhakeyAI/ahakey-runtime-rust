@@ -17,6 +17,19 @@ use uuid::Uuid;
 pub struct Record {
     pub request: Mutation,
     pub operation: Operation,
+    /// Persisted before an OLED write can start; controls post-crash recovery checks.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub oled_transaction: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+impl Record {
+    pub fn needs_oled_recovery(&self) -> bool {
+        self.oled_transaction
+            && self.operation.status == "paused"
+            && matches!(self.request, Mutation::Oled(_))
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Journal {
@@ -55,7 +68,15 @@ impl Storage {
         }
         for record in journal.operations.values_mut() {
             if !record.operation.terminal() {
-                record.operation.status = "failed".into();
+                if record.operation.status == "paused" {
+                    continue;
+                }
+                record.operation.status = if matches!(record.request, Mutation::Oled(_)) {
+                    "paused"
+                } else {
+                    "failed"
+                }
+                .into();
                 record.operation.effect = "unknown".into();
                 record.operation.error_code = Some("RUNTIME_RESTARTED".into());
             }
