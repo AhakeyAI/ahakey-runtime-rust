@@ -47,21 +47,7 @@ impl Device {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Operation {
-    pub operation_id: String,
-    pub device_id: String,
-    pub status: String,
-    pub progress: f64,
-    pub effect: String,
-    pub error_code: Option<String>,
-}
-impl Operation {
-    pub fn terminal(&self) -> bool {
-        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
-    }
-}
+pub use crate::operation::Operation;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

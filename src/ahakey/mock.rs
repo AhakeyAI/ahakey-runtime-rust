@@ -19,7 +19,7 @@ impl Default for MockX1 {
 }
 #[async_trait]
 impl Hardware for MockX1 {
-    async fn oled_state(&mut self) -> Result<super::oled::State> {
+    async fn oled_state(&mut self) -> Result<crate::oled::State> {
         self.refresh().await?;
         use crate::oled::{ScreenState, Target};
         let mut targets = Vec::new();
@@ -40,8 +40,8 @@ impl Hardware for MockX1 {
         ] {
             targets.push(Target::MultiState { state });
         }
-        Ok(super::oled::State {
-            profile: super::oled::PROFILE.into(),
+        Ok(crate::oled::State {
+            profile: super::x1::oled::PROFILE.into(),
             width: crate::oled::WIDTH,
             height: crate::oled::HEIGHT,
             interval_ms: 100,
@@ -49,7 +49,7 @@ impl Hardware for MockX1 {
                 .into_iter()
                 .map(|target| {
                     let asset = self.oled.get(&target.entry().unwrap());
-                    super::oled::Entry {
+                    crate::oled::Entry {
                         max_frames: target.max_frames(),
                         target,
                         valid: asset.is_some(),
@@ -97,10 +97,13 @@ impl Hardware for MockX1 {
         &self,
         configuration: &crate::configuration::Configuration,
     ) -> Result<Vec<Vec<u8>>> {
-        crate::protocol::x1::configuration_commands(configuration)
+        crate::ahakey::x1::commands::configuration_commands(configuration)
     }
-    fn keymap_commands(&self, request: &crate::keymap::KeymapApply) -> Result<Vec<Vec<u8>>> {
-        crate::protocol::x1::keymap_commands(request)
+    fn keymap_commands(
+        &self,
+        request: &crate::configuration::keymap::KeymapApply,
+    ) -> Result<Vec<Vec<u8>>> {
+        crate::ahakey::x1::commands::keymap_commands(request)
     }
     async fn connect(&mut self) -> Result<HardwareState> {
         self.connected = true;

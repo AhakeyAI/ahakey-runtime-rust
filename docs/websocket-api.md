@@ -764,9 +764,9 @@ process.once('SIGINT', () => ws.close());
 
 ## 实现与相关资料
 
-- [IPC 实现](../src/ipc.rs)：认证、请求解码、分发与升级限制。
-- [Runtime 实现](../src/runtime.rs)：快照、事件、基线、幂等与操作执行。
-- [Wire 模型](../src/wire.rs)、[配置模型](../src/configuration.rs)、[改键模型](../src/keymap.rs)、[输入模型](../src/input.rs)。
+- [IPC 实现](../src/ipc/mod.rs)：认证、请求解码、分发与升级限制。
+- [Runtime 实现](../src/runtime/mod.rs)：快照、事件、基线、幂等与操作执行。
+- [Wire 模型](../src/wire.rs)、[配置模型](../src/configuration/mod.rs)、[改键模型](../src/configuration/keymap.rs)、[输入模型](../src/input/mod.rs)。
 - [初版架构](runtime-v1.md)、[独立改键说明](keymap-api.md)、[输入监听集成](input-monitoring.md)。
 - [固件联调手册](ble-integration-guide.md)、[调试日志](debug-mode.md)。
 

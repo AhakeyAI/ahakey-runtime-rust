@@ -1,5 +1,5 @@
 use crate::{
-    ahakey::{device::AhaKey, model_x1::ModelX1},
+    ahakey::{device::AhaKey, x1::ModelX1},
     configuration::Configuration,
     error::{Error, Result},
     runtime::Runtime,

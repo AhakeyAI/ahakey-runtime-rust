@@ -108,25 +108,35 @@ The final command requires macOS, Swift, and a local Studio `dev` branch. It ext
 
 ```text
 src/
-├── main.rs                # CLI, process lifecycle, signals
-├── lib.rs                 # Library entry
-├── ipc.rs                 # Authenticated JSON-RPC and ordered subscriptions
-├── wire.rs                # Studio-facing projections
-├── configuration.rs       # Strict business types, validation and scoped merging
-├── runtime.rs             # Device workers, admission, state and operation lifecycle
-├── storage.rs             # Atomic durable journal and crash recovery
-├── discovery.rs           # Discovery permissions and instance lock
+├── main.rs              # Executable entry point
+├── app/                 # CLI, bootstrap and process shutdown
+├── runtime/             # Device ownership and orchestration
+│   ├── state.rs         # Snapshots, events and input state
+│   ├── device.rs        # Connection intent and observed device state
+│   ├── worker.rs        # Exclusive hardware loop and reconnect/readback
+│   ├── configuration.rs # Configuration/keymap execution
+│   ├── oled.rs          # Device uploads and bounded recovery
+│   └── operations.rs    # Durable admission, idempotency, pause/resume
+├── configuration/       # Configuration, actions, readback and keymap models
+├── oled/                # Image codec, integrity, resources and binary transfers
+├── ipc/                 # Listener, session, authentication and RPC dispatch
 ├── ahakey/
-│   ├── device.rs          # AhaKey container for Box<dyn Hardware>
-│   ├── hardware.rs        # Model-independent hardware interface
-│   ├── model_x1.rs        # Concrete X1 session and confirmation behavior
-│   ├── mock.rs            # Explicit X1 simulator
-│   └── state.rs           # Shared status and X1 status decoding
-└── protocol/
-    ├── ble.rs             # Discovery and model selection
-    └── x1.rs              # X1-only command encoding
-contracts/runtime-v1/      # Studio dev schema and unchanged fixtures
+│   ├── hardware.rs      # Hardware interface
+│   ├── mock.rs          # Explicit simulated X1 adapter
+│   └── x1/              # X1 connection, commands, notifications and resources
+├── input/               # HID state and native-helper supervision
+├── storage/             # Journal recovery and atomic filesystem writes
+├── operation.rs         # Mutation identity and operation result model
+├── wire.rs              # Studio-facing DTOs and advertised methods
+├── protocol/ble.rs      # BLE discovery and model selection
+├── discovery.rs         # Private discovery file and instance lock
+├── debug.rs             # Bounded diagnostics
+└── error.rs             # Shared error codes
+contracts/runtime-v1/    # Unchanged Studio contract and fixtures
+tests/runtime/          # Tests grouped by feature, with shared support
 ```
+
+See [code layout and ownership](docs/code-layout.md) for module responsibilities and public-path compatibility.
 
 A new model implements `Hardware` in its own struct and supplies its own discovery matcher, configuration encoder, status decoding and confirmation rules. Neither Studio IPC nor the scheduler encodes X1 bytes. See [initial architecture and behavior](docs/runtime-v1.md) for invariants, errors, limits and hardware acceptance checks.
 

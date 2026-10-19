@@ -92,19 +92,19 @@ PY
 
 ```mermaid
 flowchart TD
-    UI[Studio 或原生测试客户端] <-->|认证 WebSocket JSON-RPC| IPC[src/ipc.rs]
-    IPC <--> RT[src/runtime.rs：状态、操作、设备所有权]
+    UI[Studio 或原生测试客户端] <-->|认证 WebSocket JSON-RPC| IPC[src/ipc/mod.rs]
+    IPC <--> RT[src/runtime/mod.rs：状态、操作、设备所有权]
     RT --> WORKER[每设备一个 worker：串行任务与通知处理]
     WORKER --> HW[Hardware Interface]
     HW --> X1[ModelX1：连接与命令确认]
     HW --> MOCK[MockX1：显式模拟]
-    X1 --> ENC[protocol/x1.rs：报文编码]
+    X1 --> ENC[ahakey/x1/commands.rs：报文编码]
     X1 <--> BLE[btleplug / CoreBluetooth]
     BLE <-->|7343 写 / 7344 通知| FW[键盘固件]
     X1 --> NOTIFY[Notifications：响应与主动通知分流]
     NOTIFY --> RT
-    RT --> JOURNAL[storage.rs：操作与配置审计]
-    HID[IOHID 输入观察 helper] --> INPUT[src/input.rs]
+    RT --> JOURNAL[storage/journal.rs：操作与配置审计]
+    HID[IOHID 输入观察 helper] --> INPUT[src/input/mod.rs]
     INPUT --> RT
 ```
 
@@ -112,16 +112,18 @@ flowchart TD
 
 | 文件 | 职责及联调修改位置 |
 | --- | --- |
-| [main.rs](../src/main.rs) | CLI、调试开关、IPC 启动与退出 |
+| [app/mod.rs](../src/app/mod.rs) / [options.rs](../src/app/options.rs) | CLI、调试开关、IPC 启动与退出 |
 | [protocol/ble.rs](../src/protocol/ble.rs) | 服务过滤、名称匹配、选择设备 |
 | [ahakey/hardware.rs](../src/ahakey/hardware.rs) | 型号间共享的 Hardware Interface |
-| [ahakey/model_x1.rs](../src/ahakey/model_x1.rs) | GATT、超时、串行 exchange、亮度确认 |
-| [ahakey/notifications.rs](../src/ahakey/notifications.rs) | 通知过滤、ACK 等待、状态推送与断线 |
-| [ahakey/state.rs](../src/ahakey/state.rs) | 状态帧字节偏移与字段有效性 |
-| [protocol/x1.rs](../src/protocol/x1.rs) | 组帧、动作、灯光与保存命令编码 |
-| [configuration.rs](../src/configuration.rs) / [keymap.rs](../src/keymap.rs) | 输入参数范围、角色/索引映射 |
-| [runtime.rs](../src/runtime.rs) | worker、并发预留、基线、操作进度与快照 |
-| [ipc.rs](../src/ipc.rs) / [wire.rs](../src/wire.rs) | 认证、可用方法与对外字段 |
+| [ahakey/x1/connection.rs](../src/ahakey/x1/connection.rs) | GATT 会话、超时、串行 exchange |
+| [ahakey/x1/adapter.rs](../src/ahakey/x1/adapter.rs) | Hardware 实现、配置读回入口、写入与亮度确认 |
+| [ahakey/x1/notifications.rs](../src/ahakey/x1/notifications.rs) | 通知过滤、ACK 等待、状态推送与断线 |
+| [ahakey/x1/state.rs](../src/ahakey/x1/state.rs) | X1 状态帧字节偏移与字段有效性 |
+| [ahakey/x1/commands.rs](../src/ahakey/x1/commands.rs) | 组帧、动作、灯光与保存命令编码 |
+| [configuration/mod.rs](../src/configuration/mod.rs) / [configuration/keymap.rs](../src/configuration/keymap.rs) | 输入参数范围、角色/索引映射 |
+| [runtime/worker.rs](../src/runtime/worker.rs) / [operations.rs](../src/runtime/operations.rs) | 设备串行循环、并发预留、操作受理与恢复 |
+| [runtime/state.rs](../src/runtime/state.rs) / [device.rs](../src/runtime/device.rs) | 快照、输入、设备状态与基线失效 |
+| [ipc/session.rs](../src/ipc/session.rs) / [client.rs](../src/ipc/client.rs) / [wire.rs](../src/wire.rs) | 消息收发、认证、订阅、可用方法与对外字段 |
 | [debug.rs](../src/debug.rs) | 可关闭的 JSONL 日志，后台限量队列 |
 
 固件侧调用链：`Profile/hiddev.c::simpleProfileChangeCB` → `receive_bytes`
@@ -366,14 +368,14 @@ completed 表示全部达到现有确认规则；仍要实测按键输出和断�
 | --- | --- | --- |
 | 主动扫描等待 | 3秒 | `protocol/ble.rs::find_x1` |
 | 未发现设备后重试 | 10秒 | `protocol/ble.rs::discover` |
-| 断连后连接重试 tick | 3秒 | `runtime.rs::worker` |
+| 断连后连接重试 tick | 3秒 | `runtime/worker.rs` |
 | GATT连接建立超时 | 15秒 | `ModelX1::connect` |
 | 自动读回总上限 | 45秒；最多采集3次 | `ModelX1::read_configuration` |
 | 单命令写入+响应总超时 | 4秒 | `ModelX1::exchange` |
 | 断开超时 | 3秒 | `ModelX1::disconnect` |
 | 已确认配置命令后间隔 | 50毫秒 | `ModelX1::write_confirmed` |
-| IPC握手/认证超时 | 各10秒 | `ipc.rs` |
-| IPC发送超时 | 5秒 | `ipc.rs` |
+| IPC握手/认证超时 | 各10秒 | `ipc/session.rs` |
+| IPC发送超时 | 5秒 | `ipc/session.rs` |
 | 正常退出等待在途写入 | 最多30秒 | `main.rs` |
 
 这些时间目前是源码常量，不是可用 CLI 参数；不要假设存在 `--timeout`。

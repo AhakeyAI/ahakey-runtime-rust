@@ -87,7 +87,9 @@ fn action_commands(mode: u8, index: u8, action: &Action) -> Vec<Vec<u8>> {
     commands
 }
 
-pub fn keymap_commands(request: &crate::keymap::KeymapApply) -> Result<Vec<Vec<u8>>> {
+pub fn keymap_commands(
+    request: &crate::configuration::keymap::KeymapApply,
+) -> Result<Vec<Vec<u8>>> {
     request.validate()?;
     let mut commands = Vec::new();
     for key in &request.keys {

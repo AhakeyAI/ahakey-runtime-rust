@@ -101,16 +101,18 @@ python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/main.rs` | 启动参数、进程生命周期和信号 |
-| `src/ipc.rs` / `wire.rs` | 认证、JSON-RPC、订阅、前端状态投影 |
-| `src/configuration.rs` | 业务类型、严格校验、按 scope 合并 |
-| `src/runtime.rs` | 每设备 worker、受理、状态、操作生命周期 |
-| `src/storage.rs` / `discovery.rs` | 持久操作日志、崩溃恢复、私有发现文件和实例锁 |
-| `src/ahakey/device.rs` / `hardware.rs` | AhaKey 容器及型号无关 Hardware 接口 |
-| `src/ahakey/model_x1.rs` / `mock.rs` | X1 真机结构体与显式模拟器 |
-| `src/ahakey/state.rs` | 公共状态及 X1 状态解码 |
-| `src/protocol/ble.rs` / `x1.rs` | 设备发现、型号选择、X1 命令编码 |
-| `contracts/runtime-v1` | Studio dev 原样协议 Schema 与样例 |
+| `src/main.rs` / `app/` | 启动入口、参数解析、信号与退出 |
+| `src/ipc/` / `wire.rs` | WebSocket 收发、认证、订阅、RPC 分发与对外数据 |
+| `src/configuration/` | 配置、动作、读回和独立改键模型 |
+| `src/runtime/` | 设备所有权、工作循环、配置和图片操作调度 |
+| `src/oled/` | 图片解码、RGB565 编码、本地资源和二进制文件接收 |
+| `src/operation.rs` | 操作请求身份、状态及幂等比较 |
+| `src/storage/` / `discovery.rs` | 持久日志、崩溃恢复、私有发现文件和实例锁 |
+| `src/ahakey/` | 设备容器、Hardware 接口、模拟器和公共状态 |
+| `src/ahakey/x1/` | X1 连接、命令编码、通知、配置读回与图片协议 |
+| `src/input/` | HID 状态模型和原生 helper 进程管理 |
+| `src/protocol/ble.rs` | 设备发现与型号选择 |
+| `tests/runtime/` | 按 IPC、配置、图片、改键、事件、存储分组的测试 |
 
 新型号新增自己的结构体，实现 `Hardware`，提供匹配规则、配置编码、状态解析和确认条件。IPC 和调度器不编码 X1 字节。详细约束与真机验收见 [初版架构](../runtime-v1.md)。
 
@@ -127,3 +129,5 @@ python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 ## Runtime 独立改键
 
 `keymap.apply` 可直接修改指定键位，不要求完整配置基线或亮度支持；复用设备 worker 和持久化操作。见 [改键 API 与 IPC 客户端](../keymap-api.md)。
+
+完整职责划分与文件定位见 [代码目录说明](../code-layout.md)。

@@ -1,5 +1,5 @@
 //! Common durable operation identity; legacy configuration records keep their JSON shape.
-use crate::{configuration::Apply, error::Result, keymap::KeymapApply};
+use crate::{configuration::Apply, configuration::keymap::KeymapApply, error::Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,5 +54,21 @@ impl Mutation {
             Self::Keymap(r) => r.canonicalize(),
             Self::Oled(_) => {}
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    pub operation_id: String,
+    pub device_id: String,
+    pub status: String,
+    pub progress: f64,
+    pub effect: String,
+    pub error_code: Option<String>,
+}
+impl Operation {
+    pub fn terminal(&self) -> bool {
+        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
     }
 }

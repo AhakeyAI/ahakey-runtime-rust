@@ -12,7 +12,7 @@ Studio Frontend / 原生客户端
   → Runtime：权威状态、操作记录、每设备写入权
   → 每设备一个 worker，独占 Box<dyn Hardware>
       → ModelX1：X1 连接、通知、命令确认、配置编码入口
-          → protocol/x1：仅 X1 的固件命令
+          → ahakey/x1/commands：仅 X1 的固件命令
           → btleplug：BLE
       → MockX1：显式模拟，不参与 BLE 匹配
 ```
@@ -124,3 +124,5 @@ python3 scripts/diagnostics/check-device.py 'x1-DEVICE_ID' --reconnect
 ## CP2 OLED 上传扩展
 
 当前增加 resource.begin/finish/abort、OLED 元数据与图片上传，以及 OLED 专用暂停/继续。文件经 WebSocket 二进制块传至本地资源库；图片解码在后台线程，设备操作复用现有唯一 worker 与持久 journal。协议、能力识别、资源范围、暂停恢复及验证边界见 [OLED API](oled-api.md)。OLED 受理中/执行中的操作在进程重启后变为 paused/unknown，保留资源供用户主动继续，不会自动写入。
+
+按功能重构后的文件定位见 [代码目录说明](code-layout.md)；原有 Rust 导入路径和 WebSocket 消息保持兼容。

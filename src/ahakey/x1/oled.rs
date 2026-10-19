@@ -1,37 +1,18 @@
 //! CP2 resource protocol, verified against remote Fireware-harness 70ca334f.
-use super::readback::ReadTransport;
+use super::transport::CommandTransport;
 use crate::{
+    ahakey::x1::commands::{frame, valid_frame},
     error::{Error, Result},
     oled::{Prepared, Target},
-    protocol::x1::{frame, valid_frame},
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
 const CATALOG: &[u8] = b"x1-c582-hw1-p1-1.0.0-r001";
 pub const PROFILE: &str = "x1-cp2-resource-v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Entry {
-    pub target: Target,
-    pub valid: bool,
-    pub write_state: String,
-    pub frame_count: u16,
-    pub byte_length: u32,
-    pub crc32: u32,
-    pub max_frames: u16,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct State {
-    pub profile: String,
-    pub width: u32,
-    pub height: u32,
-    pub interval_ms: u16,
-    pub entries: Vec<Entry>,
-}
-pub(super) async fn identify(io: &mut impl ReadTransport) -> Result<()> {
+pub use crate::oled::{Entry, State};
+
+pub(super) async fn identify(io: &mut impl CommandTransport) -> Result<()> {
     let response = io.query(&frame(0x9f, &[])).await?;
     if response != frame(0x9f, &[&[0][..], CATALOG].concat()) {
         return Err(Error("UNSUPPORTED_CAPABILITY"));
@@ -41,7 +22,7 @@ pub(super) async fn identify(io: &mut impl ReadTransport) -> Result<()> {
     metadata(io, Target::ModeDefault { mode: 0 }).await?;
     Ok(())
 }
-pub(super) async fn metadata(io: &mut impl ReadTransport, target: Target) -> Result<Entry> {
+pub(super) async fn metadata(io: &mut impl CommandTransport, target: Target) -> Result<Entry> {
     let entry = target.entry()?;
     let basic = io.query(&frame(0x88, &[2, entry])).await?;
     if !valid_frame(&basic)
@@ -79,7 +60,7 @@ pub(super) async fn metadata(io: &mut impl ReadTransport, target: Target) -> Res
         crc32,
     })
 }
-pub(super) async fn state(io: &mut impl ReadTransport) -> Result<State> {
+pub(super) async fn state(io: &mut impl CommandTransport) -> Result<State> {
     use crate::oled::ScreenState;
     identify(io).await?;
     let mut targets = Vec::new();
@@ -113,7 +94,7 @@ pub(super) async fn state(io: &mut impl ReadTransport) -> Result<State> {
     })
 }
 pub(super) async fn upload(
-    io: &mut impl ReadTransport,
+    io: &mut impl CommandTransport,
     target: &Target,
     asset: &Prepared,
     pause: watch::Receiver<bool>,
@@ -175,7 +156,7 @@ pub(super) async fn upload(
     }
     Ok(())
 }
-async fn ack(io: &mut impl ReadTransport, opcode: u8, payload: &[u8]) -> Result<()> {
+async fn ack(io: &mut impl CommandTransport, opcode: u8, payload: &[u8]) -> Result<()> {
     let response = io.query(&frame(opcode, payload)).await?;
     if response != frame(opcode, &[0]) {
         return Err(Error("DEVICE_INVALID_RESPONSE"));
@@ -191,7 +172,7 @@ mod tests {
 
     struct Script(VecDeque<(Vec<u8>, Vec<u8>)>);
     #[async_trait::async_trait]
-    impl ReadTransport for Script {
+    impl CommandTransport for Script {
         async fn query(&mut self, command: &[u8]) -> Result<Vec<u8>> {
             let (expected, reply) = self.0.pop_front().expect("unexpected device command");
             assert_eq!(command, expected);
@@ -231,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn remote_cp2_capture_upload_and_resume_after_uncertain_commit() {
         let capture: serde_json::Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/x1-oled-cp2.json")).unwrap();
+            serde_json::from_str(include_str!("../../../tests/fixtures/x1-oled-cp2.json")).unwrap();
         let crc = capture["crc32"].as_u64().unwrap() as u32;
         let bytes = vec![0; FRAME_BYTES];
         assert_eq!(crate::oled::crc32(&bytes), crc);

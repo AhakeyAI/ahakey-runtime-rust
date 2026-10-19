@@ -5,8 +5,10 @@ pub mod discovery;
 pub mod error;
 pub mod input;
 pub mod ipc;
-pub mod keymap;
-pub mod mutation;
+pub use configuration::keymap;
+pub mod operation;
+// Compatibility with existing Rust clients.
+pub use operation as mutation;
 pub mod oled;
 pub mod protocol;
 pub mod runtime;

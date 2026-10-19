@@ -1,21 +1,19 @@
 //! X1 readback matches remote eternal-dev bc4f6e40dc11b486af9cedba528d24844e6225a9.
 //! Firmware 1.4.8 / protocol 3.2 exposes resources 00..02 and capability bit 10.
+use super::transport::CommandTransport;
 use crate::{
+    ahakey::x1::commands::{frame, valid_frame},
     configuration::{
         Action, ConfigurationReadback, EFFECTS, Light, MODIFIERS, MacroStep, ROLES, ReadbackDevice,
         ReadbackKey, ReadbackMode, STATES,
     },
     error::{Error, Result},
-    protocol::x1::{frame, valid_frame},
 };
+#[cfg(test)]
 use async_trait::async_trait;
 
 const REQUIRED_CAPABILITY: u32 = 1 << 10;
 
-#[async_trait]
-pub(super) trait ReadTransport: Send {
-    async fn query(&mut self, command: &[u8]) -> Result<Vec<u8>>;
-}
 fn invalid() -> Error {
     Error("DEVICE_INVALID_RESPONSE")
 }
@@ -39,7 +37,7 @@ fn capabilities(response: &[u8]) -> Result<bool> {
     Ok(response[14] == 1)
 }
 async fn resource(
-    transport: &mut impl ReadTransport,
+    transport: &mut impl CommandTransport,
     kind: u8,
     index: u8,
     total: u8,
@@ -67,7 +65,7 @@ struct RawConfiguration {
     lights: Vec<Vec<u8>>,
     global: Vec<u8>,
 }
-async fn collect(transport: &mut impl ReadTransport) -> Result<RawConfiguration> {
+async fn collect(transport: &mut impl CommandTransport) -> Result<RawConfiguration> {
     let mut bindings = Vec::new();
     let mut lights = Vec::new();
     for index in 0..16 {
@@ -86,7 +84,7 @@ async fn collect(transport: &mut impl ReadTransport) -> Result<RawConfiguration>
 /// Firmware has no revision field. Publish two matching complete collections,
 /// keeping writes serialized. Descriptions are not exposed by this firmware.
 pub(super) async fn read(
-    transport: &mut impl ReadTransport,
+    transport: &mut impl CommandTransport,
 ) -> Result<Option<ConfigurationReadback>> {
     if !capabilities(&transport.query(&frame(0x9f, &[])).await?)? {
         return Ok(None);
@@ -227,9 +225,10 @@ mod tests {
     }
     impl Device {
         fn new() -> Self {
-            let fixture: serde_json::Value =
-                serde_json::from_str(include_str!("../../tests/fixtures/x1-readback-1.4.8.json"))
-                    .unwrap();
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../tests/fixtures/x1-readback-1.4.8.json"
+            ))
+            .unwrap();
             Self {
                 responses: fixture["responses"]
                     .as_object()
@@ -260,7 +259,7 @@ mod tests {
         }
     }
     #[async_trait]
-    impl ReadTransport for Device {
+    impl CommandTransport for Device {
         async fn query(&mut self, command: &[u8]) -> Result<Vec<u8>> {
             self.queries += 1;
             if self.change_at == Some(self.queries) {

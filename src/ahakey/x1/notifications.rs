@@ -1,7 +1,8 @@
-use super::state::{HardwareState, X1State};
+use super::state::X1State;
+use crate::ahakey::state::HardwareState;
 use crate::{
+    ahakey::x1::commands::valid_frame,
     error::{Error, Result},
-    protocol::x1::valid_frame,
 };
 use btleplug::api::{ValueNotification, bleuuid::uuid_from_u16};
 use futures_util::{Stream, StreamExt};

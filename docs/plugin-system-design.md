@@ -14,7 +14,7 @@
 
 ## 现有代码给出的约束
 
-- Runtime 的 `src/input.rs` / `native/macos/InputMonitor.swift` 观察的是固件处理后
+- Runtime 的 `src/input/mod.rs` / `native/macos/InputMonitor.swift` 观察的是固件处理后
   的 HID usage，不是物理开关编号，也不会阻止原输入进入系统。
 - master 的 `APP/hardware/psk_multi_button.c` 会先执行已保存的快捷键或宏。
   多个物理键可能产生相同 usage，一个物理键也可能产生多个 usage。

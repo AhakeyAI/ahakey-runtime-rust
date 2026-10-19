@@ -62,69 +62,6 @@ pub struct Key {
     pub description: String,
 }
 
-/// Device-observed fields. Missing descriptions or unrepresentable actions stay unknown.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigurationReadback {
-    pub device: ReadbackDevice,
-    pub modes: Vec<ReadbackMode>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadbackDevice {
-    pub brightness_percent: u8,
-    pub task_light_mode: u8,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReadbackMode {
-    pub mode: u8,
-    pub keys: Vec<ReadbackKey>,
-    pub lights: Vec<Light>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadbackKey {
-    pub role: String,
-    pub action: Option<Action>,
-    pub description: Option<String>,
-    pub raw_binding: Vec<u8>,
-}
-impl ConfigurationReadback {
-    /// A complete baseline requires every writable field to be device-observed.
-    pub fn complete_configuration(&self) -> Option<Configuration> {
-        if self.modes.len() != 4 {
-            return None;
-        }
-        let config = Configuration {
-            device: DeviceFields {
-                brightness_percent: self.device.brightness_percent,
-            },
-            modes: self
-                .modes
-                .iter()
-                .map(|mode| {
-                    Some(Mode {
-                        mode: mode.mode,
-                        keys: mode
-                            .keys
-                            .iter()
-                            .map(|key| {
-                                Some(Key {
-                                    role: key.role.clone(),
-                                    action: key.action.clone()?,
-                                    description: key.description.clone()?,
-                                })
-                            })
-                            .collect::<Option<Vec<_>>>()?,
-                        lights: mode.lights.clone(),
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?,
-        };
-        config.validate().ok()?;
-        Some(config)
-    }
-}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Light {
@@ -162,23 +99,8 @@ pub enum MacroStep {
     ReleaseAll {},
     NoOp {},
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Scope {
-    pub device_fields: Vec<String>,
-    pub modes: Vec<u8>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Apply {
-    pub operation_id: String,
-    pub device_id: String,
-    pub base_token: String,
-    pub scope: Scope,
-    pub changes: Configuration,
-}
 
-fn unique<T: Ord>(values: impl Iterator<Item = T>) -> bool {
+pub(super) fn unique<T: Ord>(values: impl Iterator<Item = T>) -> bool {
     let mut seen = BTreeSet::new();
     values.into_iter().all(|v| seen.insert(v))
 }
@@ -246,35 +168,10 @@ impl Configuration {
     }
     pub fn mock_defaults() -> Self {
         let document: crate::wire::ConfigurationDocument = serde_json::from_str(include_str!(
-            "../contracts/runtime-v1/fixtures/configuration.json"
+            "../../contracts/runtime-v1/fixtures/configuration.json"
         ))
         .expect("checked Studio fixture");
         document.configuration.expect("fixture configuration")
-    }
-}
-impl Apply {
-    pub fn validate(&self) -> Result<()> {
-        if self.operation_id.is_empty()
-            || self.operation_id.len() > 128
-            || self.device_id.is_empty()
-            || self.device_id.len() > 256
-            || self.base_token.is_empty()
-            || self.base_token.len() > 128
-            || self.scope.device_fields != ["brightnessPercent"]
-            || !unique(self.scope.modes.iter())
-        {
-            return Err(Error("INVALID_PARAMS"));
-        }
-        self.changes.validate()?;
-        let modes: BTreeSet<_> = self.changes.modes.iter().map(|m| m.mode).collect();
-        if modes != self.scope.modes.iter().copied().collect() {
-            return Err(Error("INVALID_PARAMS"));
-        }
-        Ok(())
-    }
-    pub fn canonicalize(&mut self) {
-        self.scope.modes.sort();
-        self.changes.canonicalize();
     }
 }
 
