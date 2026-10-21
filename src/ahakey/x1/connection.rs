@@ -144,7 +144,7 @@ impl super::transport::CommandTransport for ModelX1 {
                 .is_some_and(|error| matches!(error.0, "DEVICE_TIMEOUT" | "DEVICE_REJECTED"))
         {
             // Nonresponsive legacy capability queries need one fresh session
-            // without probing. A lost link during 0x9D still reads on reconnect.
+            // without probing. A lost link during configuration readback still reads on reconnect.
             self.skip_readback_once = true;
         }
         result

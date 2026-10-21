@@ -103,7 +103,9 @@ impl Notifications {
                     || serde_json::json!({"deviceId":self.device_id}),
                 );
             } else if data.len() >= 6 {
-                return if data[3] == 0 {
+                return if data[3] == 0
+                    || (opcode == 0x87 && data.len() == 6 && matches!(data[3], 2 | 3))
+                {
                     Ok(data)
                 } else {
                     Err(Error("DEVICE_REJECTED"))
@@ -155,8 +157,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_exact_key_read_status_two_and_three_reach_the_decoder() {
+        use crate::ahakey::x1::commands::frame;
+        for code in [2, 3] {
+            let error = frame(0x87, &[code]);
+            assert_eq!(
+                session(vec![error.clone()]).response(0x87).await.unwrap(),
+                error
+            );
+        }
+        for (opcode, payload) in [
+            (0x87, vec![1]),
+            (0x87, vec![2, 0]),
+            (0x87, vec![3, 0]),
+            (0x85, vec![3]),
+        ] {
+            assert_eq!(
+                session(vec![frame(opcode, &payload)])
+                    .response(opcode)
+                    .await
+                    .unwrap_err()
+                    .0,
+                "DEVICE_REJECTED"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn lever_status_with_connection_flags_survives_unrelated_capability_reply() {
-        // Current firmware appends connection flags to the full status frame.
+        // Extended status frames may append connection flags.
         let status = |lever| vec![0xaa, 0xbb, 0, 92, 50, 1, 4, 2, 0, lever, 35, 3, 0xcc, 0xdd];
         let up = status(0);
         let mut input = session(vec![

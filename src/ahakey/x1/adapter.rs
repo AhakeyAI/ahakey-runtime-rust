@@ -89,9 +89,7 @@ impl Hardware for ModelX1 {
         if std::mem::take(&mut self.skip_readback_once) {
             return Ok(None);
         }
-        let result = tokio::time::timeout(Duration::from_secs(45), super::readback::read(self))
-            .await
-            .unwrap_or(Err(Error("DEVICE_TIMEOUT")));
+        let result = super::readback::read_bounded(self, Duration::from_secs(45)).await;
         match &result {
             Err(error)
                 if matches!(

@@ -235,9 +235,9 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
 
 此方法**不会读取键盘 Flash**。真实设备初连、Runtime 重启、设备断连或观测到外部亮度变化后，完整配置可能为 `null`。`null` 表示完整配置未知，界面应禁用完整配置保存，避免将本地默认值误当作设备内容。
 
-现有固件 1.4.8 / 协议 3.2 的 `0x9D` 提供绑定、灯效和全局灯光资源。Runtime 按[远端提交 bc4f6e4](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/bc4f6e40dc11b486af9cedba528d24844e6225a9)在首次连接、重连及进程重启后自动读取，连续两次采集一致后，在结果的新增可选字段 `readback` 中提供。读取期间设备保持 `connecting`，完成后更新 baseToken、发布 `configuration.changed`，再进入 `ready`。
+Runtime 以 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da) 为基准，用 `0x87` 读取按键及描述、`0x88` 读取亮度和灯效。在首次连接、重连及进程重启后自动读取，连续两次采集一致后，在可选字段 `readback` 中提供。读取期间设备保持 `connecting`，完成后更新 baseToken、发布 `configuration.changed`，再进入 `ready`。
 
-`readback` 与完整 `configuration` 分开：描述为 `null`，不能表达的绑定其 `action` 为 `null`，`rawBinding` 保留原始数据。固件没有描述和跨块版本号查询，Runtime 不会发送不存在的资源或用默认描述生成完整基线。
+`readback` 与完整 `configuration` 分开：所有现有可写字段完整可读且可表示时，自动建立完整 `configuration`。不能表达的动作或非 ASCII 描述为 `null`，原始字节保留。固件没有配置 revision，Runtime 使用连续采集结果比较，不用未知字段生成完整基线。
 
 `baseToken` 用于防止旧会话或并发修改覆盖当前状态。不要解析、递增或自行生成。成功写入和基线失效后 token 会改变。收到配置事件或写入终态后，应重新读取再开始下一次编辑/保存。
 
@@ -248,13 +248,15 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
 | 字段路径 | 内容 |
 | --- | --- |
 | `readback.device.brightnessPercent` | 设备当前亮度 `0..100`；SDK 可设置为 0，完整配置写入仍要求 `1..100` |
-| `readback.device.taskLightMode` | `0` 单任务、`1` 多任务灯光模式 |
+| `readback.device.taskLightMode` | `null`；当前固件的 `0x98` 为只设置接口，不能查询 |
 | `readback.modes` | 四个模式，模式编号 `0..3` |
 | `readback.modes[].keys` | 每模式四个角色 |
 | `readback.modes[].keys[].role` | `voice`, `approve`, `reject`, `submit` |
 | `readback.modes[].keys[].action` | 已解码 Action；现有 Action 无法表达时为 `null`，不是 disabled |
-| `readback.modes[].keys[].description` | 当前固件不可读，值为 `null` |
-| `readback.modes[].keys[].rawBinding` | 长度 100 的 `0..255` 整数数组；第 0 字节 subtype，第 1 字节为有效 payload 长度 |
+| `readback.modes[].keys[].description` | 固件读回的 ASCII 描述；非 ASCII 或读取失败时为 `null` |
+| `readback.modes[].keys[].rawBinding` | 读取成功时补零至长度 100：第 0 字节 subtype，第 1 字节为 payload 长度；读取失败时为 `[]` |
+| `readback.modes[].keys[].rawDescription` | 成功时返回去掉尾部空格/零字节的原始描述字节；读取失败时省略 |
+| `readback.modes[].keys[].readStatus` | 固件状态：`0` 成功、`2` 越界/不支持的保存类型、`3` 数据超过单帧上限；2/3 不包含地址回显 |
 | `readback.modes[].lights` | 每模式九种 `{state,effect}` 映射，名称与 Configuration 相同 |
 
 键索引与角色对应关系为 `0=voice`、`1=approve`、`2=reject`、`3=submit`。raw-F18 固件的物理 Voice Key 固定输出 F18，保存的绑定不等于该键的实际输出行为。
@@ -318,7 +320,7 @@ readback 是连接期间读取到的设备内容。成功写入后清除旧 read
 - `changes.modes` 包含 1–4 个不同模式，每个模式必须提交全部四个角色和全部九种状态灯效，不能只提交其中一个字段。
 - `changes` 是 `Configuration`，不是 `ConfigurationDocument` 或 RPC 信封。字段范围见[数据模型](#数据模型)。
 
-即使请求提交全部四个模式，**WebSocket 也不能绕过未知基线完成初始化**。真实设备首次建立完整基线需要操作人员显式运行 `--initialize FILE --device-id ID`，它会覆盖全部四模式和亮度，具体步骤见 [README](../README.md#real-hardware-and-first-configuration)。应用只需改键时使用下节接口。
+即使请求提交全部四个模式，**WebSocket 也不能绕过未知基线完成初始化**。读回不完整时，操作人员可显式运行 `--initialize FILE --device-id ID`，它会覆盖全部四模式和亮度，具体步骤见 [README](../README.md#real-hardware-and-first-configuration)。应用只需改键时使用下节接口。
 
 ## 独立改键
 
@@ -622,13 +624,13 @@ HTTP 403、超出连接数、消息过大、认证超时、发送超时或事件
 | 设备写入 | 每设备一个在途操作，worker 队列容量 1；不提供应用级批量排队 |
 | 持久操作记录 | 最多 128 个已受理 ID，终态也计入；满后新写入返回 `BUSY` |
 | X1 硬件命令 | 每次交换最多 4 秒；整次保存可远长于一个 RPC 超时 |
-| 自动读回 | 总上限 45 秒；每次采集 217 个资源请求，连续两次一致才发布，最多采集三次 |
+| 自动读回 | 总上限 45 秒；每次采集 53 个只读请求，连续两次一致才发布，最多采集三次 |
 
 持久记录不会自动淘汰，也没有归档/删除 RPC。维护前应停止 Runtime 并核对客户端未决操作，不要在应用中直接删除运行中的日志或锁文件。
 
 应用自己的 RPC 超时只表示“未收到响应”，不是取消操作。应将短时 RPC 等待与较长的写入进度等待分开；退出应用也不会取消已经受理的硬件写入。
 
-1.4.8 固件的可读配置字段在连接时自动读回；完整描述不可读，完整 configuration 基线仍需显式建立。没有单独的配置主动刷新 RPC。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、按键注入、语音、固件升级、Hook 状态触发、历史事件重放或通用操作取消接口。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
+新固件的动作、描述、亮度和灯效在连接时自动读回；完整可表示的读回可建立 configuration 基线。没有单独的配置主动刷新 RPC。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、按键注入、语音、固件升级、Hook 状态触发、历史事件重放或通用操作取消接口。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
 
 初版 [JSON Schema](../contracts/runtime-v1/schema.json) 和 fixtures 保持原 Studio 契约，**未完整收录 `keymap.apply`、输入监听及 readback 扩展**。接入现有版本时将本参考与对应扩展文档一起使用。当前硬件开发以 macOS 为主，Windows/Linux 真机行为尚未验收。
 

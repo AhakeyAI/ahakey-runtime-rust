@@ -58,35 +58,24 @@ PY
 
 ## 2. 源码版本与支持范围
 
-本次核对的 Rust 仓库为 `ahakey-runtime-rust` 当前工作区，包含未提交功能。
-固件依据为远端 [`eternal-dev` 固定提交 bc4f6e4](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/bc4f6e40dc11b486af9cedba528d24844e6225a9)：
+本次固件依据为远端 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da)；生产源码与已验收的 `70ca334` 相同。
+设备以 `0x9F` catalog 标识，不能从分支名或本地源码判断实物已运行相同构建。
 
-- `APP/sub_main/command_solve.h`：固件版本 **1.4.8**、协议 **3.2**、X1 model ID `01`。
-- 固件 `AHAKEY_PROTOCOL_3_0.md` 标题仍为 **1.4.7**；以源码常量及真机能力响应区分。
-- 更早的 `AhaKey-X1-hardware-source-master` 压缩包不是本次新固件版本依据。
-- 实物版本需通过设备报告确认；仅看到本地源码版本或连接成功不能确认已烧录版本。
-
-| 功能 | 当前新固件源码 | 当前 Rust Runtime |
+| 功能 | 固件协议 | 当前 Rust Runtime |
 | --- | --- | --- |
-| `00` 完整状态 | 支持，附连接标志 | 自动查询并解析部分字段 |
-| `73` 绑定/描述，`84` 灯效表，`85` 亮度，`04` 保存 | 支持 | 已编码并串行确认 |
-| `9B` 模式通知 | 支持 | 被动接收并更新模式；不主动轮询 |
-| `9F` 版本/能力/model 查询 | 支持 | 每次连接后查询，检查 bit 10；无单独 IPC 方法 |
-| `9D` 配置分块读取 | 支持，资源 00–02 | 已实现，连接后自动读取；通过 configuration.get.readback 提供 |
-| 状态帧连接 flags | 支持 | 原始日志可见，尚未投影到 Device DTO |
-| `92` 设置当前模式 | 支持 | 尚无对应 IPC 方法 |
-| `95` 待机、`98/99/9A` 任务灯光 | 支持 | 尚无对应 IPC 方法 |
-| GIF 上传/布局查询、USB 配置传输 | 固件存在相关实现 | 当前 Rust 未接入 |
-| 临时插件接管 | 本文不认定已有该能力 | 仍为设计草案 |
+| 完整状态、模式通知 | `00`、`9B` | 查询状态并接收推送，不轮询 |
+| 配置写入和保存 | `73/84/85/04` | 串行确认，亮度回读验证 |
+| 身份 | `9F` catalog | 匹配 catalog，再验证查询结构 |
+| 按键动作和描述 | `87 mode key` | 连接、重连、重启自动读回 |
+| 亮度和灯效 | `88 00`、`88 01 mode state` | 自动读回并投影到 configuration.get |
+| OLED 图片资源 | `88` 元数据、`8A/B/C` 上传 | 已接入查询、上传、暂停与继续 |
+| 灯效预览、资源清除 | `89`、`8D` | 尚无应用接口 |
+| 模式、休眠、语音引导、拨杆 | `92/95/96/97` | 尚无对应配置接口；`96` 是语音引导 |
+| AI 呈现 | `90/98/99/9A` | 尚无对应应用接口；`98` 只设置 |
 
-`configuration.get` 返回 Runtime 缓存：已读到的设备字段通过可选 `readback` 提供。
-该方法自身不触发新的 BLE 查询。描述没有读回资源，因此完整 `configuration`
-仍可能为 null；Runtime 不用空描述填充完整基线。
-
-另一个重要差异：当前 eternal-dev 的物理 Voice Key（索引 0）在默认 SDK 未接管时
-固定输出 **F18 / HID usage `6D`**，不按普通 `user_key_bind` 决定输出。
-写入该索引并收到 ACK，不证明它会变成 D。此前 master 四键均可配置的结论不能
-直接套用到这个固件候选版本；联调必须记录分支、版本与 SDK 构建选项。
+`configuration.get` 返回 Runtime 已读到的设备数据，自身不触发 BLE 查询。
+动作、描述及其他现有可写字段完整可读且可表示时，自动生成完整 configuration；不可读字段保留未知。
+读取的是设备保存的配置，实际物理键输出仍需结合该构建的按键处理路径验收。
 
 ## 3. 内部架构与数据流
 
@@ -159,14 +148,12 @@ BLE 连接。不同 discovery 路径的进程锁不能阻止两个实例争抢�
 Rust 当前以 service=`7340`、characteristic=`7344`、帧首尾有效为入口条件：
 
 - opcode=`00`：必须通过状态解析才完成状态查询。
-- 其他请求：opcode 匹配、长度至少 6、status=`00` 即被视为协议成功。
-- 非零 status 映射为 `DEVICE_REJECTED`，详细原始码从 `ble.rx` 查看。
+- 其他请求：opcode 匹配、status=`00` 后交给具体协议解码器校验长度、地址和字段。
+- 除 `87` 的精确六字节 status 2/3 留给读回处理外，非零 status 映射为 `DEVICE_REJECTED`；原始码见 `ble.rx`。
 - 同一 opcode 没有请求 ID；迟到回复可能混淆下一次请求，因此失败会断开旧会话。
 - GATT 写入成功和设备协议成功是两层确认。ACK 成功也不等于已验证业务效果。
 
-当前固件 status：`00` 成功，`01` 参数格式错误，`02` 越界，`03` 不支持，
-`04` 需要 USB，`05` Flash 未就绪，`06` Flash 范围错误，`07` Flash 忙，
-`08` Flash 对齐错误。不能只看 status=0 判断新能力存在，应检查完整能力响应。
+通用状态常量为 `00` 成功、`01` 参数格式错误、`02` 越界、`03` 数据过长；各命令仍需按具体协议解释。不能只看 status=0 判断支持，应校验结构化回复。
 
 ### MTU、分片与帧边界
 
@@ -222,11 +209,11 @@ effect 编号按固件顺序，不能照 UI 菜单顺序编号：
 
 ### `00` 状态字段：绝对字节偏移
 
-当前新固件回复 14 字节，例如：
+当前新固件回复 13 字节，例如：
 
 ```text
 TX: AA BB 00 CC DD
-RX: AA BB 00 5C 32 01 04 02 00 01 23 03 CC DD
+RX: AA BB 00 5C 32 01 00 02 00 01 23 CC DD
 ```
 
 | 偏移 | 字段 | 示例 | 当前 Runtime 处理 |
@@ -235,17 +222,14 @@ RX: AA BB 00 5C 32 01 04 02 00 01 23 03 CC DD
 | 2 | opcode | 00 | 校验 |
 | 3 | 电量 | 5C=92% | 0..100 有效，否则 null |
 | 4 | 信号字段 | 32=50 | 不投影；固件目前写常量，不当实测 RSSI |
-| 5..6 | 固件主/次版本 | 01 04 | 不投影；patch 要查 `9F` |
+| 5..6 | 固件版本常量 | 01 00 | 不投影；`9F` 返回 catalog |
 | 7 | 当前模式 | 02=模式索引2 | 0..3；越界则整帧无效 |
 | 8 | 当前灯效 | 00 | HardwareState 保留，Device DTO 未暴露 |
 | 9 | 拨杆 | 01 | 0→automatic，1→manual，其余→null |
 | 10 | 亮度 | 23=35 | 有该扩展字段且 1..100 时有效 |
-| 11 | 连接标志 | 03 | 新固件字段，Runtime 未解析 |
-| 12..13 | 帧尾 | CC DD | 校验 |
+| 11..12 | 帧尾 | CC DD | 校验 |
 
-连接标志 bit0=BLE link、bit1=HID ready、bit2=USB ready。
-旧 12 字节帧没有亮度/flags，13 字节帧只有亮度；帧尾随版本移动。
-不能固定把旧帧偏移11解释为 flags。
+该构建没有追加连接 flags，不能把帧尾当作连接状态。
 
 ### `9B` 模式推送
 
@@ -260,65 +244,51 @@ sequence 为单字节，可从255回到0；不能按无限递增数字比较。�
 
 ## 6. 固件扩展与 Runtime 自动读回
 
-以下为实际固件报文格式；`9F` 和 `9D` 已在 Runtime 连接流程中使用，其他命令
-仍以支持表为准，并非同名 IPC 方法。调试开关本身不增加查询。所有通信复用
-同一个 worker 和通知消费者。
+以下查询复用同一个设备 worker 和通知消费者，应用使用 `configuration.get` 获取读回结果。
 
-### `9F` 版本与能力查询
+### `9F` catalog 查询
 
 ```text
 TX: AA BB 9F CC DD
-RX: AA BB 9F 00 03 02 01 04 01 FF 07 00 00 08 01 CC DD
+RX: AA BB 9F 00 <ASCII catalog> CC DD
+catalog: x1-c582-hw1-p1-1.0.0-r001
 ```
 
-此 RX 是当前源码常量推导的示例，不是真机记录：协议3.2、固件1.4.8、硬件版本1、
-capabilities=`0x000007FF`（4字节小端）、model=1。
+catalog 相同仍需结构化查询回复确认支持。未知 catalog 不尝试配置读回。
+通用成功 ACK 不作为功能支持证据；查询超时/拒绝后关闭旧会话。
 
-偏移：4协议major、5协议minor、6固件major、7固件minor、8硬件版本、
-9..12 capabilities LE32、13固件patch、14 model、15..16帧尾。
-当前定义的能力位0..10依次为：待机设置、恢复出厂、旧Voice配置、永不关机待机值、
-任务灯光模式、任务槽、GIF布局、模式同步、设备型号、连接flags、配置读回。
-Runtime 检查协议主版本、X1 model 和 bit 10。通用成功 ACK 识别为不支持，
-不会发送 `9D`。能力查询超时/拒绝后重建一次不探测的会话，基本功能继续可用。
-
-### `9D` 配置分块读取
+### `87` 按键动作与描述
 
 ```text
-请求：AA BB 9D <resource> <index> <offset> CC DD
-响应：AA BB 9D 00 <resource> <index> <total> <offset> <count> <data...> CC DD
+TX: AA BB 87 <mode> <key> CC DD
+RX: AA BB 87 00 <mode> <key> <type> <actionLen> <action...> <descLen> <desc...> CC DD
 ```
 
-| resource | index | total / 读取方式 |
-| --- | --- | --- |
-| 00 按键绑定 | mode*4+key，0..15 | 100字节；offset=0,8,...,96，末块4字节 |
-| 01 AI灯效表 | mode，0..3 | 9字节；offset=0、8 |
-| 02 全局灯光 | 0 | 2字节：亮度、任务灯光模式 |
+mode/key 均为 0..3；type 为 00 未分配、73 快捷键、74 宏。
+响应最多 64 字节，描述最多 20 字节，尾部空格/零字节由固件裁去。
+状态 2/3 的六字节错误回复没有地址回显：2 表示越界或保存类型不支持，3 表示响应过长。
+Runtime 每次只保留一个有效请求，记录该键状态并继续读取其他键。
 
-例如 `AA BB 9D 00 00 00 CC DD` 读取模式0/键0的第一块。
-每块最多8数据字节，整帧最多19字节。组装时校验 resource/index/total/offset/count，
-收齐再解析；绑定前两字节为 subtype 和有效 payload 长度。
-源码读的是当前 RAM 的 `key_bund` 等设置，并不是独立读 Flash 验证已经掉电保存。
-远端没有跨块版本号和描述资源。Runtime 保持单 worker，连续两次完整采集结果
-一致后发布，最多采集三次，总上限45秒。每次217个资源请求，稳定路径共435次
-交换（含一次能力查询）。这是采集结果比对，不是设备原子快照；应保持单一配置
-owner。描述为null，无法表达的绑定action为null并保留100字节rawBinding。
-完整Configuration基线仍需显式建立。断连、观测到外部亮度变化和成功写入清除
-旧readback，重连重新读取。不发送资源03/04，不要求bit11/12。
+### `88` 亮度、灯效和资源元数据
 
-### 其他常用扩展
+```text
+TX: AA BB 88 00 CC DD
+RX: AA BB 88 00 00 <brightness> CC DD
+TX: AA BB 88 01 <mode> <state> CC DD
+RX: AA BB 88 00 01 <mode> <state> <effect> CC DD
+```
 
-| 命令 | 参数示例与约定 | 当前 Rust |
-| --- | --- | --- |
-| `92` | `<mode 0..3>` 设置当前模式 | 未接入 |
-| `95` | 空查询；`<minutes LE16>` 设置0/5/10/15/30，0不自动关机 | 未接入；不要复用历史 `86` |
-| `98` | 空查询；`<0=single,1=multi>` 设置任务灯光模式 | 未接入 |
-| `99` | `<slot 0..3> <profile 0..3> <state 0..4> <flags>` | 未接入 |
-| `9A` | `00`心跳；`01`状态；不能省略子命令 | 未接入 |
+state=0..8，effect=0..16；资源元数据使用 selector 2/3，见 [OLED API](oled-api.md)。
+每次完整配置采集为 53 个请求，稳定路径共 107 次交换（含一次 catalog 查询）。
+连续两次原始观察值一致才发布，最多三次、总预算 45 秒，不含前后状态刷新。
+可表示的完整读回成为本次会话基线；不可表示动作、非 ASCII 描述和失败状态保留未知及原始数据。
+`taskLightMode` 为 null，不发送不存在的 `98` 查询。读回不写设备，读取当前 RAM 不代表已验证断电保存。
 
-`9A 00` 回复 `9A 00 <activeMask>`；`9A 01` 状态回复整帧20字节。
-任务心跳到期30秒清空任务槽，这是固件任务状态期限，不是 Runtime BLE命令超时。
-`99` 的 profile=Claude/Cursor/Codex/custom；state=idle/running/waiting/done/error；
-flags bit0 表示前台。详细扩展以固件对应版本源码为准。
+### 尚未开放给应用的命令
+
+`92` 模式、`95` 休眠、`96` 语音引导、`97` 拨杆、`98/99/9A` AI 呈现需各自应用接口。
+`98` 为设置命令，`99` 使用该构建的带版本四槽完整快照，`9A` 不提供旧式任务状态查询。
+固件已有命令不等于 Runtime 已开放对应 WebSocket 方法。
 
 ## 7. 从 IPC 联调参数
 
@@ -422,7 +392,7 @@ cargo run --locked --example runtime-keymap -- --device-id 'x1-REPLACE_WITH_ID' 
 | 大查询超时但00正常 | 固件是否因超过MTU-3丢弃通知；当前没有通知分片重组 |
 | 模式/拨杆不更新 | 是否真的发00/9B、9B是否9字节、mode/source是否合法 |
 | 非零ACK变成DEVICE_REJECTED | 从ble.rx读取原始status，不能只看统一Runtime错误码 |
-| configuration仍为null | 看readback是否已有数据；远端未暴露描述，完整基线不自动生成 |
+| configuration仍为null | 检查readStatus、不可表示的动作/描述及亮度范围；完整可读数据会自动建立基线 |
 | 改Voice键ACK成功但仍F18 | 检查raw-F18固件分支的固定索引0逻辑 |
 | 接口返回UNSUPPORTED_CAPABILITY | 区分未知IPC方法、缺GATT特征、无有效亮度及亮度回读不一致 |
 | 超时后结果unknown | 可能已执行部分命令，按operationId核对，不自动重发 |

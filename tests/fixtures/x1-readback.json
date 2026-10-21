@@ -1,0 +1,96 @@
+{
+  "source": "https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da",
+  "sourceSha256": {
+    "APP/sub_main/command_solve.c": "4623ffe1f7d752a74dfd535b19af18ca2324222f5dde889dc7a61ea441aa2756",
+    "APP/sub_main/command_solve.h": "96a24abae870ffb31d0c086538379a0b9f487f1f3cb6ddb1e4fb895b617fd5bf",
+    "APP/services/display_config_store.h": "6162046caa5c5a6a684da367104aa4b9cd4447431e23fc218411ef561171e5a2"
+  },
+  "capture": "Unchanged production 0x9F/0x87/0x88 read branches and helpers, host cc execution with synthetic RAM; not a physical-device capture. Peripheral metadata is stubbed and unused by captured selectors.",
+  "responses": {
+    "aabb9fccdd": "aabb9f0078312d633538322d6877312d70312d312e302e302d72303031ccdd",
+    "aabb00ccdd": "aabb005232010000000123ccdd",
+    "aabb870000ccdd": "aabb87000000730107044d304b30ccdd",
+    "aabb870001ccdd": "aabb87000001730108044d304b31ccdd",
+    "aabb870002ccdd": "aabb87000002730109044d304b32ccdd",
+    "aabb870003ccdd": "aabb8700000373010a044d304b33ccdd",
+    "aabb870100ccdd": "aabb8700010073010b044d314b30ccdd",
+    "aabb870101ccdd": "aabb8700010173010c044d314b31ccdd",
+    "aabb870102ccdd": "aabb8700010273010d044d314b32ccdd",
+    "aabb870103ccdd": "aabb8700010373010e044d314b33ccdd",
+    "aabb870200ccdd": "aabb8700020073010f044d324b30ccdd",
+    "aabb870201ccdd": "aabb87000201730110044d324b31ccdd",
+    "aabb870202ccdd": "aabb87000202730111044d324b32ccdd",
+    "aabb870203ccdd": "aabb87000203730112044d324b33ccdd",
+    "aabb870300ccdd": "aabb87000300730113044d334b30ccdd",
+    "aabb870301ccdd": "aabb87000301730114044d334b31ccdd",
+    "aabb870302ccdd": "aabb87000302730115044d334b32ccdd",
+    "aabb870303ccdd": "aabb87000303730116044d334b33ccdd",
+    "aabb8800ccdd": "aabb88000023ccdd",
+    "aabb88010000ccdd": "aabb880001000000ccdd",
+    "aabb88010001ccdd": "aabb880001000101ccdd",
+    "aabb88010002ccdd": "aabb880001000202ccdd",
+    "aabb88010003ccdd": "aabb880001000303ccdd",
+    "aabb88010004ccdd": "aabb880001000404ccdd",
+    "aabb88010005ccdd": "aabb880001000505ccdd",
+    "aabb88010006ccdd": "aabb880001000606ccdd",
+    "aabb88010007ccdd": "aabb880001000707ccdd",
+    "aabb88010008ccdd": "aabb880001000808ccdd",
+    "aabb88010100ccdd": "aabb880001010001ccdd",
+    "aabb88010101ccdd": "aabb880001010102ccdd",
+    "aabb88010102ccdd": "aabb880001010203ccdd",
+    "aabb88010103ccdd": "aabb880001010304ccdd",
+    "aabb88010104ccdd": "aabb880001010405ccdd",
+    "aabb88010105ccdd": "aabb880001010506ccdd",
+    "aabb88010106ccdd": "aabb880001010607ccdd",
+    "aabb88010107ccdd": "aabb880001010708ccdd",
+    "aabb88010108ccdd": "aabb880001010809ccdd",
+    "aabb88010200ccdd": "aabb880001020002ccdd",
+    "aabb88010201ccdd": "aabb880001020103ccdd",
+    "aabb88010202ccdd": "aabb880001020204ccdd",
+    "aabb88010203ccdd": "aabb880001020305ccdd",
+    "aabb88010204ccdd": "aabb880001020406ccdd",
+    "aabb88010205ccdd": "aabb880001020507ccdd",
+    "aabb88010206ccdd": "aabb880001020608ccdd",
+    "aabb88010207ccdd": "aabb880001020709ccdd",
+    "aabb88010208ccdd": "aabb88000102080accdd",
+    "aabb88010300ccdd": "aabb880001030003ccdd",
+    "aabb88010301ccdd": "aabb880001030104ccdd",
+    "aabb88010302ccdd": "aabb880001030205ccdd",
+    "aabb88010303ccdd": "aabb880001030306ccdd",
+    "aabb88010304ccdd": "aabb880001030407ccdd",
+    "aabb88010305ccdd": "aabb880001030508ccdd",
+    "aabb88010306ccdd": "aabb880001030609ccdd",
+    "aabb88010307ccdd": "aabb88000103070accdd",
+    "aabb88010308ccdd": "aabb88000103080bccdd"
+  },
+  "cases": {
+    "empty": {
+      "request": "aabb870000ccdd",
+      "response": "aabb87000000000000ccdd"
+    },
+    "macro": {
+      "request": "aabb870000ccdd",
+      "response": "aabb8700000074080107030a02070400056d6163726fccdd"
+    },
+    "chord": {
+      "request": "aabb870000ccdd",
+      "response": "aabb8700000073020709056d6163726fccdd"
+    },
+    "nonAscii": {
+      "request": "aabb870000ccdd",
+      "response": "aabb8700000073010701ffccdd"
+    },
+    "maximum": {
+      "request": "aabb870000ccdd",
+      "response": "aabb870000007335070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700ccdd"
+    },
+    "tooLarge": {
+      "request": "aabb870000ccdd",
+      "response": "aabb8703ccdd"
+    },
+    "unsupportedType": {
+      "request": "aabb870000ccdd",
+      "response": "aabb8702ccdd"
+    }
+  }
+}

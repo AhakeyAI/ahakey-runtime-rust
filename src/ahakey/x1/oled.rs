@@ -7,7 +7,7 @@ use crate::{
 };
 use tokio::sync::{mpsc, watch};
 
-const CATALOG: &[u8] = b"x1-c582-hw1-p1-1.0.0-r001";
+pub(super) const CATALOG: &[u8] = b"x1-c582-hw1-p1-1.0.0-r001";
 pub const PROFILE: &str = "x1-cp2-resource-v1";
 
 pub use crate::oled::{Entry, State};

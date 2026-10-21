@@ -52,7 +52,7 @@ impl Hardware for ReadableDevice {
         Ok(Some(ConfigurationReadback {
             device: ReadbackDevice {
                 brightness_percent: config.device.brightness_percent,
-                task_light_mode: 0,
+                task_light_mode: None,
             },
             modes: config
                 .modes
@@ -68,6 +68,8 @@ impl Hardware for ReadableDevice {
                             action: Some(key.action),
                             description: None,
                             raw_binding: vec![],
+                            raw_description: None,
+                            read_status: Some(0),
                         })
                         .collect(),
                 })

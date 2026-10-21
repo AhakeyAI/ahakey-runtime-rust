@@ -12,7 +12,7 @@ pub struct ConfigurationReadback {
 #[serde(rename_all = "camelCase")]
 pub struct ReadbackDevice {
     pub brightness_percent: u8,
-    pub task_light_mode: u8,
+    pub task_light_mode: Option<u8>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadbackMode {
@@ -27,6 +27,10 @@ pub struct ReadbackKey {
     pub action: Option<Action>,
     pub description: Option<String>,
     pub raw_binding: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_description: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_status: Option<u8>,
 }
 impl ConfigurationReadback {
     /// A complete baseline requires every writable field to be device-observed.

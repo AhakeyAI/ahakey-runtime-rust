@@ -4,7 +4,7 @@
 
 ## 当前设备支持
 
-当前实现针对远端 [Fireware-harness `70ca334f65d73b6a2f20a0598e55c6da59f26526`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/70ca334f65d73b6a2f20a0598e55c6da59f26526) 的 CP2 资源协议，profile 为 `x1-cp2-resource-v1`。Runtime 同时检查 catalog 和实际 `0x88` 结构化读回；相同 catalog 或通用成功 ACK 不足以启用上传。旧 1.4.8 的 `0x9D` 配置读回仍保留，其旧式 OLED 上传不在本接口中启用。
+当前实现针对远端 [Fireware-harness `70ca334f65d73b6a2f20a0598e55c6da59f26526`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/70ca334f65d73b6a2f20a0598e55c6da59f26526) 的 CP2 资源协议，profile 为 `x1-cp2-resource-v1`。Runtime 同时检查 catalog 和实际 `0x88` 结构化读回；相同 catalog 或通用成功 ACK 不足以启用上传。配置读回也使用该分支的 `0x87/0x88` 协议。
 
 | 项目 | 限制 |
 | --- | --- |

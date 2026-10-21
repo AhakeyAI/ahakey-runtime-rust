@@ -1,149 +1,152 @@
-//! X1 readback matches remote eternal-dev bc4f6e40dc11b486af9cedba528d24844e6225a9.
-//! Firmware 1.4.8 / protocol 3.2 exposes resources 00..02 and capability bit 10.
-use super::transport::CommandTransport;
+//! Configuration readback for Fireware-harness 076382b (production sources 70ca334).
+use super::{
+    commands::{frame, valid_frame},
+    transport::CommandTransport,
+};
 use crate::{
-    ahakey::x1::commands::{frame, valid_frame},
     configuration::{
         Action, ConfigurationReadback, EFFECTS, Light, MODIFIERS, MacroStep, ROLES, ReadbackDevice,
         ReadbackKey, ReadbackMode, STATES,
     },
     error::{Error, Result},
 };
-#[cfg(test)]
-use async_trait::async_trait;
 
-const REQUIRED_CAPABILITY: u32 = 1 << 10;
+#[cfg(test)]
+mod tests;
 
 fn invalid() -> Error {
     Error("DEVICE_INVALID_RESPONSE")
 }
-fn capabilities(response: &[u8]) -> Result<bool> {
-    if !valid_frame(response) || response[2] != 0x9f || response.get(3) != Some(&0) {
+
+fn structured(response: &[u8], opcode: u8) -> Result<()> {
+    if response == frame(opcode, &[0]) {
+        // The catalog is shared with earlier builds that ACK unknown commands.
+        return Err(Error("UNSUPPORTED_CONFIGURATION"));
+    }
+    if !valid_frame(response) || response[2] != opcode || response.get(3) != Some(&0) {
         return Err(invalid());
     }
-    if response.len() == 6 {
-        return Ok(false);
+    Ok(())
+}
+
+fn key(response: &[u8], mode: u8, index: u8) -> Result<ReadbackKey> {
+    // Only locally valid addresses are queried, with one outstanding exchange.
+    // Firmware status 2/3 has no address and leaves this key unknown.
+    if response == frame(0x87, &[2]) || response == frame(0x87, &[3]) {
+        return Ok(ReadbackKey {
+            role: ROLES[index as usize].into(),
+            action: None,
+            description: None,
+            raw_binding: vec![],
+            raw_description: None,
+            read_status: Some(response[3]),
+        });
     }
-    if response.len() < 15 {
+    structured(response, 0x87)?;
+    if !(11..=64).contains(&response.len())
+        || response[4..6] != [mode, index]
+        || !matches!(response[6], 0 | 0x73 | 0x74)
+    {
         return Err(invalid());
     }
-    let flags = u32::from_le_bytes(response[9..13].try_into().unwrap());
-    if response[4] != 3 || flags & REQUIRED_CAPABILITY == 0 {
-        return Ok(false);
-    }
-    if response.len() < 17 {
+    let action_len = response[7] as usize;
+    let desc_offset = 8 + action_len;
+    if action_len > 98 || desc_offset >= response.len() - 2 {
         return Err(invalid());
     }
-    Ok(response[14] == 1)
-}
-async fn resource(
-    transport: &mut impl CommandTransport,
-    kind: u8,
-    index: u8,
-    total: u8,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(total as usize);
-    while bytes.len() < total as usize {
-        let offset = bytes.len() as u8;
-        let response = transport
-            .query(&frame(0x9d, &[kind, index, offset]))
-            .await?;
-        let count = (total - offset).min(8);
-        if !valid_frame(&response)
-            || response.len() != 11 + count as usize
-            || response[2..9] != [0x9d, 0, kind, index, total, offset, count]
-        {
-            return Err(invalid());
-        }
-        bytes.extend_from_slice(&response[9..9 + count as usize]);
+    let desc_len = response[desc_offset] as usize;
+    if desc_len > 20
+        || response.len() != 11 + action_len + desc_len
+        || (response[6] == 0 && action_len != 0)
+    {
+        return Err(invalid());
     }
-    Ok(bytes)
-}
-#[derive(PartialEq, Eq)]
-struct RawConfiguration {
-    bindings: Vec<Vec<u8>>,
-    lights: Vec<Vec<u8>>,
-    global: Vec<u8>,
-}
-async fn collect(transport: &mut impl CommandTransport) -> Result<RawConfiguration> {
-    let mut bindings = Vec::new();
-    let mut lights = Vec::new();
-    for index in 0..16 {
-        bindings.push(resource(transport, 0, index, 100).await?);
-    }
-    for mode in 0..4 {
-        lights.push(resource(transport, 1, mode, 9).await?);
-    }
-    let global = resource(transport, 2, 0, 2).await?;
-    Ok(RawConfiguration {
-        bindings,
-        lights,
-        global,
+    let mut raw_binding = vec![0; 100];
+    raw_binding[..2].copy_from_slice(&response[6..8]);
+    raw_binding[2..2 + action_len].copy_from_slice(&response[8..desc_offset]);
+    let raw_description = response[desc_offset + 1..desc_offset + 1 + desc_len].to_vec();
+    let description = raw_description
+        .is_ascii()
+        .then(|| String::from_utf8(raw_description.clone()).unwrap());
+    Ok(ReadbackKey {
+        role: ROLES[index as usize].into(),
+        action: action(&raw_binding).ok(),
+        description,
+        raw_binding,
+        raw_description: Some(raw_description),
+        read_status: Some(0),
     })
 }
-/// Firmware has no revision field. Publish two matching complete collections,
-/// keeping writes serialized. Descriptions are not exposed by this firmware.
-pub(super) async fn read(
-    transport: &mut impl CommandTransport,
+
+async fn collect(io: &mut impl CommandTransport) -> Result<ConfigurationReadback> {
+    let brightness = io.query(&frame(0x88, &[0])).await?;
+    structured(&brightness, 0x88)?;
+    if brightness.len() != 8 || brightness[4] != 0 || brightness[5] > 100 {
+        return Err(invalid());
+    }
+    let mut modes = Vec::new();
+    for mode in 0..4 {
+        let mut keys = Vec::new();
+        for index in 0..4 {
+            keys.push(key(
+                &io.query(&frame(0x87, &[mode, index])).await?,
+                mode,
+                index,
+            )?);
+        }
+        let mut lights = Vec::new();
+        for (state, name) in STATES.iter().enumerate() {
+            let response = io.query(&frame(0x88, &[1, mode, state as u8])).await?;
+            structured(&response, 0x88)?;
+            if response.len() != 10 || response[4..7] != [1, mode, state as u8] {
+                return Err(invalid());
+            }
+            lights.push(Light {
+                state: (*name).into(),
+                effect: EFFECTS
+                    .get(response[7] as usize)
+                    .ok_or_else(invalid)?
+                    .to_string(),
+            });
+        }
+        modes.push(ReadbackMode { mode, keys, lights });
+    }
+    Ok(ConfigurationReadback {
+        device: ReadbackDevice {
+            brightness_percent: brightness[5],
+            task_light_mode: None,
+        },
+        modes,
+    })
+}
+
+pub(super) async fn read_bounded(
+    io: &mut impl CommandTransport,
+    deadline: std::time::Duration,
 ) -> Result<Option<ConfigurationReadback>> {
-    if !capabilities(&transport.query(&frame(0x9f, &[])).await?)? {
+    tokio::time::timeout(deadline, read(io))
+        .await
+        .unwrap_or(Err(Error("DEVICE_TIMEOUT")))
+}
+
+pub(super) async fn read(io: &mut impl CommandTransport) -> Result<Option<ConfigurationReadback>> {
+    let identity = io.query(&frame(0x9f, &[])).await?;
+    if !valid_frame(&identity) || identity[2] != 0x9f || identity.get(3) != Some(&0) {
+        return Err(invalid());
+    }
+    if identity != frame(0x9f, &[&[0][..], super::oled::CATALOG].concat()) {
         return Ok(None);
     }
-    let mut previous = collect(transport).await?;
+    let mut previous = collect(io).await?;
     for _ in 0..2 {
-        let current = collect(transport).await?;
+        let current = collect(io).await?;
+        // Compare raw observations too: distinct unknown values must not collapse.
         if current == previous {
-            return decode(current).map(Some);
+            return Ok(Some(current));
         }
         previous = current;
     }
     Err(Error("CONFIGURATION_CHANGED"))
-}
-fn decode(raw: RawConfiguration) -> Result<ConfigurationReadback> {
-    if raw.global[0] > 100 || raw.global[1] > 1 {
-        return Err(invalid());
-    }
-    let mut modes = Vec::new();
-    for (mode, light_map) in raw.lights.iter().enumerate() {
-        let mut keys = Vec::new();
-        for (key, role) in ROLES.iter().enumerate() {
-            let raw_binding = raw.bindings[mode * 4 + key].clone();
-            // A stored binding can be outside the host model (including an
-            // incomplete macro). Keep the bytes rather than losing the device.
-            let action = action(&raw_binding).ok();
-            keys.push(ReadbackKey {
-                role: (*role).into(),
-                action,
-                description: None,
-                raw_binding,
-            });
-        }
-        let lights = STATES
-            .iter()
-            .zip(light_map)
-            .map(|(state, effect)| {
-                Ok(Light {
-                    state: (*state).into(),
-                    effect: EFFECTS
-                        .get(*effect as usize)
-                        .ok_or_else(invalid)?
-                        .to_string(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        modes.push(ReadbackMode {
-            mode: mode as u8,
-            keys,
-            lights,
-        });
-    }
-    Ok(ConfigurationReadback {
-        device: ReadbackDevice {
-            brightness_percent: raw.global[0],
-            task_light_mode: raw.global[1],
-        },
-        modes,
-    })
 }
 
 fn action(bytes: &[u8]) -> Result<Action> {
@@ -202,203 +205,5 @@ fn action(bytes: &[u8]) -> Result<Action> {
             Ok(Action::Macro { steps })
         }
         _ => Err(unsupported()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    fn unhex(value: &str) -> Vec<u8> {
-        (0..value.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&value[i..i + 2], 16).unwrap())
-            .collect()
-    }
-    struct Device {
-        responses: BTreeMap<Vec<u8>, Vec<u8>>,
-        queries: usize,
-        change_at: Option<usize>,
-        unstable: bool,
-        corrupt: Option<usize>,
-    }
-    impl Device {
-        fn new() -> Self {
-            let fixture: serde_json::Value = serde_json::from_str(include_str!(
-                "../../../tests/fixtures/x1-readback-1.4.8.json"
-            ))
-            .unwrap();
-            Self {
-                responses: fixture["responses"]
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(request, response)| (unhex(request), unhex(response.as_str().unwrap())))
-                    .collect(),
-                queries: 0,
-                change_at: None,
-                unstable: false,
-                corrupt: None,
-            }
-        }
-        fn binding(&mut self, value: &[u8]) {
-            let mut bytes = [0; 100];
-            bytes[..value.len()].copy_from_slice(value);
-            // Mutate captured payloads; frame layout remains the remote C output.
-            for (request, response) in &mut self.responses {
-                if request[2..5] == [0x9d, 0, 0] {
-                    let offset = request[5] as usize;
-                    let count = response[8] as usize;
-                    response[9..9 + count].copy_from_slice(&bytes[offset..offset + count]);
-                }
-            }
-        }
-        fn global(&mut self) -> &mut Vec<u8> {
-            self.responses.get_mut(&frame(0x9d, &[2, 0, 0])).unwrap()
-        }
-    }
-    #[async_trait]
-    impl CommandTransport for Device {
-        async fn query(&mut self, command: &[u8]) -> Result<Vec<u8>> {
-            self.queries += 1;
-            if self.change_at == Some(self.queries) {
-                self.binding(&[0x73, 1, 9]);
-            }
-            if self.unstable && command == frame(0x9d, &[0, 0, 0]) {
-                self.global()[9] ^= 1;
-            }
-            let mut response = self
-                .responses
-                .get(command)
-                .expect("request must exist in remote fixture")
-                .clone();
-            if self.queries == 3
-                && let Some(field) = self.corrupt
-            {
-                response[field] ^= 1;
-            }
-            Ok(response)
-        }
-    }
-
-    #[tokio::test]
-    async fn decodes_remote_c_responses_and_supported_actions_without_inventing_descriptions() {
-        let mut device = Device::new();
-        let observed = read(&mut device).await.unwrap().unwrap();
-        assert_eq!(observed.device.brightness_percent, 35);
-        assert_eq!(observed.device.task_light_mode, 1);
-        assert_eq!(observed.modes.len(), 4);
-        for mode in &observed.modes {
-            assert_eq!(mode.keys.len(), 4);
-            assert_eq!(mode.lights.len(), 9);
-            for (index, key) in mode.keys.iter().enumerate() {
-                assert_eq!(
-                    key.action,
-                    Some(Action::Shortcut {
-                        modifiers: vec![],
-                        key_code: 7 + mode.mode * 4 + index as u8
-                    })
-                );
-                assert_eq!(key.description, None);
-                assert_eq!(key.raw_binding.len(), 100);
-            }
-            for (index, light) in mode.lights.iter().enumerate() {
-                assert_eq!(light.effect, EFFECTS[(mode.mode as usize + index) % 17]);
-            }
-        }
-        assert!(observed.complete_configuration().is_none());
-
-        for (binding, expected) in [
-            (vec![0; 100], Action::Disabled {}),
-            (
-                vec![0x73, 2, 0xe0, 0xe3],
-                Action::Shortcut {
-                    modifiers: vec!["control".into(), "gui".into()],
-                    key_code: 0,
-                },
-            ),
-            (
-                vec![0x74, 10, 1, 7, 3, 255, 2, 7, 4, 0, 0, 0],
-                Action::Macro {
-                    steps: vec![
-                        MacroStep::KeyDown { key_code: 7 },
-                        MacroStep::Delay { delay_ms: 765 },
-                        MacroStep::KeyUp { key_code: 7 },
-                        MacroStep::ReleaseAll {},
-                        MacroStep::NoOp {},
-                    ],
-                },
-            ),
-        ] {
-            device.binding(&binding);
-            let observed = read(&mut device).await.unwrap().unwrap();
-            assert_eq!(observed.modes[0].keys[0].action, Some(expected));
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_or_unsupported_devices_are_not_queried_for_configuration() {
-        for caps in [
-            vec![0xaa, 0xbb, 0x9f, 0, 0xcc, 0xdd],
-            vec![
-                0xaa, 0xbb, 0x9f, 0, 3, 2, 1, 4, 1, 0xff, 3, 0, 0, 8, 1, 0xcc, 0xdd,
-            ],
-            vec![
-                0xaa, 0xbb, 0x9f, 0, 3, 2, 1, 4, 1, 0xff, 7, 0, 0, 8, 2, 0xcc, 0xdd,
-            ],
-        ] {
-            let mut device = Device::new();
-            device.responses.insert(frame(0x9f, &[]), caps);
-            assert!(read(&mut device).await.unwrap().is_none());
-            assert_eq!(device.queries, 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn changed_data_is_retried_and_persistent_changes_return_an_error() {
-        let mut device = Device::new();
-        device.change_at = Some(100);
-        let observed = read(&mut device).await.unwrap().unwrap();
-        assert_eq!(
-            observed.modes[0].keys[0].action,
-            Some(Action::Shortcut {
-                modifiers: vec![],
-                key_code: 9
-            })
-        );
-        device.unstable = true;
-        assert_eq!(
-            read(&mut device).await.unwrap_err().0,
-            "CONFIGURATION_CHANGED"
-        );
-    }
-
-    #[tokio::test]
-    async fn mismatched_chunk_address_offset_or_length_is_rejected() {
-        for field in [5, 6, 7, 8] {
-            let mut device = Device::new();
-            device.corrupt = Some(field);
-            assert_eq!(
-                read(&mut device).await.unwrap_err().0,
-                "DEVICE_INVALID_RESPONSE"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn unrepresentable_bindings_and_zero_brightness_remain_observable() {
-        for binding in [[0x73, 2, 7, 9], [0x73, 1, 0xe4, 0], [0x74, 1, 1, 0]] {
-            let mut device = Device::new();
-            device.binding(&binding);
-            let observed = read(&mut device).await.unwrap().unwrap();
-            assert!(observed.modes[0].keys[0].action.is_none());
-            assert_eq!(&observed.modes[0].keys[0].raw_binding[..4], &binding);
-        }
-        let mut device = Device::new();
-        device.global()[9] = 0;
-        let observed = read(&mut device).await.unwrap().unwrap();
-        assert_eq!(observed.device.brightness_percent, 0);
-        assert!(observed.complete_configuration().is_none());
     }
 }
