@@ -7,6 +7,7 @@ import struct
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 SPEC = importlib.util.spec_from_file_location('package_runtime', Path(__file__).parents[1] / 'package-runtime.py')
@@ -51,7 +52,17 @@ class ReleasePackages(unittest.TestCase):
     def test_macos_archive_keeps_runtime_helper_and_executable_modes(self):
         for binary in ['ahakey-runtime-rust', 'ahakey-input-monitor']:
             self.macho(binary)
-        archive = self.package('aarch64-apple-darwin')
+        original = tarfile.TarFile.gettarinfo
+
+        def windows_metadata(tar, *args, **kwargs):
+            member = original(tar, *args, **kwargs)
+            if member.isfile():
+                member.mode = 0o666
+            return member
+
+        # Windows does not expose Unix executable bits, even after chmod(0755).
+        with patch.object(tarfile.TarFile, 'gettarinfo', windows_metadata):
+            archive = self.package('aarch64-apple-darwin')
         prefix = archive.name.removesuffix('.tar.gz')
         with tarfile.open(archive) as package:
             def read(name):

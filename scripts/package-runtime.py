@@ -118,6 +118,7 @@ def package_runtime(repo, binary_dir, output, target, label, info):
             def normalize(member):
                 member.uid = member.gid = 0
                 member.uname = member.gname = ''
+                member.mode = 0o755 if member.isdir() or Path(member.name).name in binaries else 0o644
                 return member
             with tarfile.open(archive, 'w:gz') as package:
                 package.add(stage, arcname=name, filter=normalize)
