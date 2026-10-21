@@ -87,6 +87,9 @@ def verify_installer(installer, target, reference):
                 subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
         elif target.endswith('windows-msvc'):
             installed = root / 'installed'
+            installed.mkdir()
+            # A previous installer left this file in the same application directory.
+            (installed / 'BUILD-INFO.json').write_text('{}')
             subprocess.run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
                             '/NOICONS', f'/DIR={installed}', f'/LOG={root / "install.log"}'], check=True, timeout=120)
             try:

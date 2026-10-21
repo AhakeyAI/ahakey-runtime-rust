@@ -22,6 +22,9 @@ UninstallDisplayName=AhaKey Runtime
 CloseApplications=yes
 RestartApplications=no
 
+[InstallDelete]
+Type: files; Name: "{app}\BUILD-INFO.json"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion
 
