@@ -2,6 +2,7 @@
 """Publish only native installers and generate release notes from Git commits."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -33,7 +34,8 @@ def main():
     if args.tag != 'v' + args.version or git(args.repo, 'rev-parse', f'refs/tags/{args.tag}^{{commit}}') != args.commit:
         raise ValueError('Release version/source does not match its tag')
     assets = release_assets(args.dist, args.tag)
-    repository = json.loads(subprocess.check_output(['gh', 'repo', 'view', '--json', 'nameWithOwner'], text=True))['nameWithOwner']
+    repository = os.environ.get('GH_REPO') or json.loads(subprocess.check_output(
+        ['gh', 'repo', 'view', '--json', 'nameWithOwner'], cwd=args.repo, text=True))['nameWithOwner']
     notes = generate_notes(args.repo, args.tag, args.commit, repository)
     with tempfile.TemporaryDirectory(prefix='ahakey-release-') as temporary:
         notes_file = Path(temporary) / 'notes.md'
