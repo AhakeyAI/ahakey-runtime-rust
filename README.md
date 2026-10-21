@@ -30,8 +30,6 @@
 | 操作 | 持久化受理、每设备独占、幂等、进度、终态与重启恢复 |
 | 模拟器 | `--mock`，独立日志，实际经过 Rust IPC 与调度器，不使用蓝牙 |
 
-已在 macOS / Rust 1.98.1 验证编译、自动测试和 **Studio dev 原有 Swift IPC 客户端联调**。已在一台 X1 真机验证发现、状态读取与 BLE 断开/重连；**配置写入和断电持久化尚未真机验证**；Windows/Linux 也未验证。已实现 CP2 资源 profile 的 OLED 图片上传、暂停与继续，真机显示、上传恢复和断电保持待验收。预览、Hook、语音、刷机和后台服务安装尚未实现。
-
 OLED 图片与 GIF 上传见 [接口文档](docs/oled-api.md) 和 [Node.js 示例](examples/oled-upload.mjs)。
 
 ## 快速启动
@@ -41,8 +39,6 @@ OLED 图片与 GIF 上传见 [接口文档](docs/oled-api.md) 和 [Node.js 示�
 应用开发请先看 [WebSocket 应用开发参考](docs/websocket-api.md)，包含发现、认证、全部 RPC 方法、事件、数据模型、错误恢复和可运行的只读客户端。
 
 与新固件联调请先看 [蓝牙地址、内部架构与参数联调手册](docs/ble-integration-guide.md)。
-
-使用支持 Rust 2024 edition 的工具链。目前以 macOS 开发为主，尚未声明最低 Rust 版本。
 
 ```sh
 cargo build --locked
@@ -65,8 +61,6 @@ Studio 切换到 `dev`，用 Xcode 打开 `AhaKey Studio.xcodeproj`，选择 **S
 cargo run --locked -- --mock --discovery "$HOME/.ahakey-runtime-test/discovery.json"
 ```
 
-在 Xcode 的 **Edit Scheme → Run → Arguments → Environment Variables** 设置 `AHAKEY_RUNTIME_DISCOVERY` 为相同的绝对文件路径。Unix 下目录须为 `0700`，discovery 原子写入为 `0600`；日志不输出 token。Ctrl+C / SIGTERM 撤下 discovery，并给已受理操作最多 30 秒完成。
-
 ## 真机与首次初始化
 
 停止旧版 Studio / Agent 对蓝牙的占用，然后运行：
@@ -85,8 +79,6 @@ Runtime 以远端 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKe
 cargo run --locked -- --device-id 'x1-替换为发现的ID' --initialize /绝对路径/configuration.json
 ```
 
-该命令会覆盖所选设备的键位/灯效配置，逐条等待 ACK，包括最终保存，并回读验证亮度。首次成功连接后执行一次。文件是包含 `device` / `modes` 的 Configuration 对象，不是 configuration.get 的结果或 RPC 信封。
-
 可先从协议样例提取一份，再自行修改后执行初始化：
 
 ```sh
@@ -98,8 +90,6 @@ Path('initial-configuration.json').write_text(json.dumps(source['configuration']
 PY
 ```
 
-完整基线和读回结果在断连、重启或发现外部亮度变化后失效，重连后重新读回。后台不会自动把缓存写回设备，读回来自当前 RAM。新固件没有任务灯光模式查询接口，`readback.device.taskLightMode` 为 `null`。保存 ACK 不等于已验证断电持久化。
-
 ## 开发
 
 ```sh
@@ -108,8 +98,6 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 ```
-
-最后一项需要 macOS、Swift 和本地 Studio dev 分支。脚本读取原始三个 Swift Runtime 文件，不切换或修改 Studio 工作区；编译后启动隔离的 Rust 模拟器，验证真实 WebSocket 客户端，再清理进程和临时文件。
 
 | 文件 | 职责 |
 | --- | --- |
@@ -127,8 +115,6 @@ python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 | `tests/runtime/` | 按 IPC、配置、图片、改键、事件、存储分组的测试 |
 
 新型号新增自己的结构体，实现 `Hardware`，提供匹配规则、配置编码、状态解析和确认条件。IPC 和调度器不编码 X1 字节。详细约束与真机验收见 [初版架构](docs/runtime-v1.md)。
-
-初版日志有界保留 **128 个已受理 operationId**，不会静默删除旧结果；达到上限后新写入返回 `BUSY`。归档/重置前先停服务、核对客户端未决操作。日志位于 discovery 同目录，真机使用 `discovery.state.json`，模拟器使用 `discovery.mock-state.json`。其中保留的配置是审计记录，不会直接冒充当前设备事实。
 
 ## 贡献与许可
 
