@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Build a native installer for Runtime and its helper; no publication."""
 import argparse
-import datetime
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -18,14 +16,6 @@ TARGETS = {
     'x86_64-pc-windows-msvc': ('windows', 0x8664),
     'x86_64-unknown-linux-gnu': ('linux', 62),
 }
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as source:
-        for block in iter(lambda: source.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def check_architecture(path, target):
@@ -55,7 +45,6 @@ def source_info(repo):
         'version': package['version'],
         'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
         'sourceDirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=repo, text=True).strip()),
-        'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
         'targetDirectory': metadata['target_directory'],
     }
 
@@ -98,17 +87,8 @@ def stage_runtime(repo, binary_dir, stage, target, label, info):
         'Linux: sudo apt install ./ahakey-runtime-*.deb; ahakey-runtime --help\n'
         'Runtime is a background service with no settings window. No login autostart is installed.\n'
         'Runtime 是后台服务，没有设置窗口；安装后不会自动开机启动。\n'
-        'Startup may request Bluetooth access. BUILD-INFO.json records source and file hashes.\n'
-        '首次连接可能需要蓝牙授权；BUILD-INFO.json 记录源码和文件校验值。\n', encoding='utf-8')
-    manifest = {key: value for key, value in info.items() if key != 'targetDirectory'}
-    manifest.update({
-        'label': label, 'target': target,
-        'builtAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        'files': [{'name': path.name, 'sha256': sha256(path), 'bytes': path.stat().st_size}
-                  for path in sorted(stage.iterdir())],
-    })
-    (stage / 'BUILD-INFO.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-    return manifest
+        'Startup may request Bluetooth access.\n'
+        '首次连接可能需要蓝牙授权。\n', encoding='utf-8')
 
 
 def package_runtime(repo, binary_dir, output, target, label, info):
@@ -117,18 +97,12 @@ def package_runtime(repo, binary_dir, output, target, label, info):
     name = f'ahakey-runtime-{label}-{target}'
     output.mkdir(parents=True, exist_ok=True)
     archive = output / (name + installer_suffix(target))
-    if any(path.exists() for path in [archive, Path(str(archive) + '.sha256'),
-                                      Path(str(archive) + '.build-info.json')]):
+    if archive.exists():
         raise FileExistsError(f'Package exists: {archive}; use a new output directory')
     with tempfile.TemporaryDirectory(prefix='ahakey-package-') as temporary:
         stage = Path(temporary) / name
-        manifest = stage_runtime(repo, binary_dir, stage, target, label, info)
-        build_installer(stage, archive, target, info['version'])
-        manifest['installer'] = {'name': archive.name, 'sha256': sha256(archive),
-                                 'bytes': archive.stat().st_size}
-        Path(str(archive) + '.build-info.json').write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-    Path(str(archive) + '.sha256').write_text(f'{sha256(archive)}  {archive.name}\n', encoding='utf-8')
+        stage_runtime(repo, binary_dir, stage, target, label, info)
+        build_installer(stage, archive, target, info['version'], label)
     return archive
 
 
@@ -139,18 +113,14 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('dist'))
     parser.add_argument('--require-clean', action='store_true')
     parser.add_argument('--repo', type=Path, help='Runtime source checkout; defaults to this repository')
-    parser.add_argument('--packaging-commit', help='Commit containing the packaging tools')
     args = parser.parse_args()
     repo = (args.repo or Path(__file__).resolve().parents[1]).resolve()
     info = source_info(repo)
-    if args.packaging_commit:
-        info['packagingCommit'] = args.packaging_commit
     if args.require_clean and info['sourceDirty']:
         raise SystemExit('Release packaging requires a clean source checkout')
     binary_dir = Path(info['targetDirectory']) / args.target / 'release'
     archive = package_runtime(repo, binary_dir, args.output.resolve(), args.target, args.label, info)
     print(archive)
-    print(str(archive) + '.sha256')
 
 
 if __name__ == '__main__':

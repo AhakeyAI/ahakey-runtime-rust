@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install or mount a native package, verify its payload, and start a mock Runtime."""
 import argparse
-import hashlib
+import filecmp
 import json
 import os
 from pathlib import Path
@@ -14,17 +14,23 @@ import time
 from urllib.parse import urlparse
 
 
-def verify_payload(binary_dir, resources, expected):
-    actual = json.loads((resources / 'BUILD-INFO.json').read_text(encoding='utf-8'))
-    if {key: value for key, value in expected.items() if key != 'installer'} != actual:
-        raise ValueError('Installed manifest does not match distribution manifest')
-    for file in actual['files']:
-        path = (binary_dir if file['name'].startswith('ahakey-') else resources) / file['name']
-        data = path.read_bytes()
-        if len(data) != file['bytes'] or hashlib.sha256(data).hexdigest() != file['sha256']:
+def verify_payload(binary_dir, resources, target, reference):
+    runtime = 'ahakey-runtime-rust' + ('.exe' if 'windows' in target else '')
+    binaries = [runtime] + (['ahakey-input-monitor'] if 'apple-darwin' in target else [])
+    for name in binaries:
+        path = binary_dir / name
+        if not filecmp.cmp(path, reference / name, shallow=False):
             raise ValueError(f'Installed content mismatch: {path}')
-        if os.name != 'nt' and path.name.startswith('ahakey-') and not path.name.endswith('.exe') and not path.stat().st_mode & 0o111:
+        if os.name != 'nt' and not path.stat().st_mode & 0o111:
             raise ValueError(f'Executable bit missing: {path}')
+    for name in ['LICENSE', 'README.txt']:
+        if not (resources / name).is_file():
+            raise ValueError(f'Installed documentation missing: {name}')
+    for directory in {binary_dir, resources}:
+        if any(path.name.lower().endswith(('.build-info.json', '.sha256'))
+               or path.name.lower() in {'build-info.json', 'sha256sums'}
+               for path in directory.iterdir()):
+            raise ValueError(f'Unexpected build metadata in installer: {directory}')
 
 
 def smoke_runtime(binary, root):
@@ -59,11 +65,7 @@ def smoke_runtime(binary, root):
                 process.wait()
 
 
-def verify_installer(installer, target):
-    expected = json.loads(Path(str(installer) + '.build-info.json').read_text(encoding='utf-8'))
-    digest = hashlib.sha256(installer.read_bytes()).hexdigest()
-    if expected['target'] != target or expected['installer']['sha256'] != digest:
-        raise ValueError('Installer does not match its manifest')
+def verify_installer(installer, target, reference):
     with tempfile.TemporaryDirectory(prefix='ahakey-install-check-') as temporary:
         root = Path(temporary)
         if target.endswith('apple-darwin'):
@@ -79,7 +81,7 @@ def verify_installer(installer, target):
                 if info['CFBundleExecutable'] != 'ahakey-runtime-rust' or not info['LSUIElement']:
                     raise ValueError('Invalid application entry point')
                 binaries, resources = bundle / 'MacOS', bundle / 'Resources'
-                verify_payload(binaries, resources, expected)
+                verify_payload(binaries, resources, target, reference)
                 smoke_runtime(binaries / 'ahakey-runtime-rust', root)
             finally:
                 subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
@@ -88,7 +90,7 @@ def verify_installer(installer, target):
             subprocess.run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
                             '/NOICONS', f'/DIR={installed}', f'/LOG={root / "install.log"}'], check=True, timeout=120)
             try:
-                verify_payload(installed, installed, expected)
+                verify_payload(installed, installed, target, reference)
                 smoke_runtime(installed / 'ahakey-runtime-rust.exe', root)
             finally:
                 uninstaller = installed / 'unins000.exe'
@@ -104,7 +106,7 @@ def verify_installer(installer, target):
             extracted = root / 'installed'
             subprocess.run(['dpkg-deb', '--extract', str(installer), str(extracted)], check=True)
             location = extracted / 'usr/lib/ahakey-runtime'
-            verify_payload(location, location, expected)
+            verify_payload(location, location, target, reference)
             command = extracted / 'usr/bin/ahakey-runtime'
             if command.resolve() != location / 'ahakey-runtime-rust':
                 raise ValueError('Debian CLI link does not point to Runtime')
@@ -116,5 +118,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
     parser.add_argument('--installer', type=Path, required=True)
+    parser.add_argument('--binary-dir', type=Path, required=True, help='Reference binaries from the build')
     args = parser.parse_args()
-    verify_installer(args.installer.resolve(), args.target)
+    verify_installer(args.installer.resolve(), args.target, args.binary_dir.resolve())

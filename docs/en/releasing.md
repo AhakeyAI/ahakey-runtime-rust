@@ -6,7 +6,7 @@ Workflow: [Runtime CD](../../.github/workflows/release.yml). Rust Build CI check
 | --- | --- |
 | Push to `main` | Four-platform development installers, retained in Actions for 14 days |
 | Run workflow, empty `release_tag` | Development installers for the selected ref; no Release |
-| Push a `v*` tag | Publish installers and curated release notes after every platform passes |
+| Push a `v*` tag | Publish only installers and automatically generated release notes after every platform passes |
 | Run workflow with an existing `release_tag` | Rebuild the original tagged source with current packaging tools and update that Release without moving its tag |
 
 ## Installation
@@ -35,32 +35,32 @@ macOS packages have no Developer ID signature or notarization; Windows installer
 
 ## Verification
 
-Each installer has `.sha256` and `.build-info.json` sidecars. Releases include an aggregate `SHA256SUMS`.
-The embedded `BUILD-INFO.json` binds payload hashes to the version, source commit, target and compiler. The external manifest also contains the installer hash and size.
-When repackaging, `sourceCommit` remains the tagged commit and `packagingCommit` identifies the updated packaging tools.
+Releases contain only the four native installers. Packaging creates no build-info files, checksum sidecars or embedded build manifests.
+The tag identifies the source version. CI compares installed binaries directly against the compiled binaries.
 
-Native CD jobs mount/copy the macOS app, silently install/uninstall Windows Setup, and extract/verify/install/remove the Debian package. Every platform verifies installed file hashes and runs `--help` and `--mock`, checking discovery, the listening port and clean shutdown after closing parent stdin.
+Native CD jobs mount/copy the macOS app, silently install/uninstall Windows Setup, and extract/verify/install/remove the Debian package. Every platform compares installed binaries to build outputs and runs `--help` and `--mock`, checking discovery, the listening port and clean shutdown after closing parent stdin.
 All packages must pass before publication. Real hardware still needs Bluetooth, input-permission and persistence acceptance.
 
 ## Publish a version
 
 1. Update `package.version` in `Cargo.toml` and synchronize `Cargo.lock`.
-2. Write `docs/releases/vVERSION.md` with features, installation instructions, compatibility and limitations. The workflow publishes that document instead of only generating a Git history link.
-3. Commit to `main`, then create and push the exact matching tag:
+2. Commit to `main`, then create and push the exact matching tag:
 
    ```sh
    git tag -a v0.1.0 -m "AhaKey Runtime v0.1.0"
    git push origin v0.1.0
    ```
 
-4. Follow Runtime CD. All four platform jobs must pass.
+3. Follow Runtime CD. All four platform jobs must pass.
 
 `v0.1.0-rc.1` requires Cargo version `0.1.0-rc.1` and is published as a prerelease. Tags must identify commits already contained in `main`. Tag-triggered publication does not overwrite an existing Release.
 
+`scripts/release_notes.py` automatically generates notes from non-merge Git commits: full history for the first version, and the previous version tag to the current tag for later versions. It groups conventional commits by feature, fix, performance, refactor, CI/build, documentation and tests, with commit links and a full history/compare link. Later repackaging commits are excluded. No handwritten version notes are required.
+
 ## Repackage an existing release
 
-Commit packaging changes and updated notes to `main`. Select Actions → Runtime CD → Run workflow, choose `main` and enter an existing tag such as `v0.1.0` in `release_tag`.
-The workflow builds Runtime from that original tag, uses current packaging tools, and verifies every installer. It then uploads installers and manifests, updates release notes and removes old `.zip` / `.tar.gz` assets. Existing installers of the same name are replaced only by this explicit manual operation.
+Commit packaging changes to `main`. Select Actions → Runtime CD → Run workflow, choose `main` and enter an existing tag such as `v0.1.0` in `release_tag`.
+The workflow builds Runtime from that original tag, uses current packaging tools, and verifies every installer. It then uploads only installers, generates release notes and removes old archives, build manifests and checksum assets. Existing installers of the same name are replaced only by this explicit manual operation.
 Neither the tag nor Runtime source is moved or rewritten.
 
 ## Package locally
@@ -71,8 +71,8 @@ Apple Silicon example (requires Rust, Swift and macOS `hdiutil`):
 MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --locked --release --target aarch64-apple-darwin
 swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 native/macos/InputMonitor.swift -o target/aarch64-apple-darwin/release/ahakey-input-monitor
 python3 -B scripts/package-runtime.py --target aarch64-apple-darwin --label local-test
-python3 -B scripts/verify-installer.py --target aarch64-apple-darwin --installer dist/ahakey-runtime-local-test-aarch64-apple-darwin.dmg
+python3 -B scripts/verify-installer.py --target aarch64-apple-darwin --installer dist/ahakey-runtime-local-test-aarch64-apple-darwin.dmg --binary-dir target/aarch64-apple-darwin/release
 ```
 
 Windows additionally requires Inno Setup 6; Linux requires `dpkg-dev` and the development libraries used for linking. Build installers on their respective OS.
-Output goes to ignored `dist/`. Existing packages are not overwritten; use `--output /new/directory` to retry. Local dirty checkouts are marked `sourceDirty=true`; CD uses `--require-clean`.
+Output goes to ignored `dist/`. Existing packages are not overwritten; use `--output /new/directory` to retry. Local packaging accepts a working checkout; CD uses `--require-clean`.

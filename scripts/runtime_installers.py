@@ -1,5 +1,4 @@
-"""Native container builders. The supplied payload already contains its manifest."""
-import json
+"""Native container builders. The supplied payload contains binaries, license and instructions."""
 import os
 from pathlib import Path
 import plistlib
@@ -16,7 +15,7 @@ def installer_suffix(target):
     return '.deb'
 
 
-def build_installer(payload, output, target, version):
+def build_installer(payload, output, target, version, label):
     with tempfile.TemporaryDirectory(prefix='ahakey-installer-') as temporary:
         root = Path(temporary)
         if target.endswith('apple-darwin'):
@@ -25,7 +24,7 @@ def build_installer(payload, output, target, version):
             shutil.copytree(payload, app / 'MacOS')
             resources = app / 'Resources'
             resources.mkdir()
-            for name in ['LICENSE', 'README.txt', 'BUILD-INFO.json']:
+            for name in ['LICENSE', 'README.txt']:
                 shutil.move(str(app / 'MacOS' / name), resources / name)
             with (app / 'Info.plist').open('wb') as file:
                 plistlib.dump({
@@ -79,9 +78,8 @@ def build_installer(payload, output, target, version):
             control.mkdir()
             deb_version = version.replace('-', '~')
             # Development builds must not replace a stable release at the same version.
-            manifest = json.loads((payload / 'BUILD-INFO.json').read_text(encoding='utf-8'))
-            if '-dev.' in manifest['label']:
-                deb_version += '~dev.' + manifest['sourceCommit'][:12]
+            if '-dev.' in label:
+                deb_version += '~dev.' + label.split('-dev.', 1)[1]
             (control / 'control').write_text(
                 f'Package: ahakey-runtime\nVersion: {deb_version}\nArchitecture: amd64\n'
                 'Maintainer: AhaKey <zhangxinyang@ahakey.cn>\n'
