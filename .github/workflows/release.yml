@@ -1,0 +1,191 @@
+name: Runtime CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-cd-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      label: ${{ steps.version.outputs.label }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate version and source
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tagged = os.environ['EVENT_NAME'] == 'push' and os.environ['REF_TYPE'] == 'tag'
+          if tagged:
+              label = os.environ['REF_NAME']
+              if label != 'v' + version:
+                  raise SystemExit(f'Tag {label} must match Cargo.toml v{version}')
+              subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          else:
+              label = f'{version}-dev.{commit[:12]}'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in {'label': label, 'version': version, 'commit': commit,
+                                 'prerelease': str('-' in version.split('+')[0]).lower()}.items():
+                  output.write(f'{key}={value}\n')
+          PY
+
+  package:
+    needs: prepare
+    name: Package (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            swift_target: arm64-apple-macosx13.0
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            swift_target: x86_64-apple-macosx13.0
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            swift_target: ''
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            swift_target: ''
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+      BUILD_LABEL: ${{ needs.prepare.outputs.label }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target "$RUST_TARGET"
+          rustup default stable
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Check release packager
+        run: python -B -m unittest discover -s scripts/tests -p 'test_package_runtime.py'
+      - name: Build and test release
+        run: |
+          cargo build --locked --release --target "$RUST_TARGET"
+          cargo test --locked --release --target "$RUST_TARGET"
+      - name: Clippy
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo clippy --locked --all-targets --target "$RUST_TARGET" -- -D warnings
+      - name: Build macOS input helper
+        if: runner.os == 'macOS'
+        env:
+          SWIFT_TARGET: ${{ matrix.swift_target }}
+        run: |
+          swiftc -O -swift-version 5 -target "$SWIFT_TARGET" native/macos/InputMonitor.swift \
+            -o "target/$RUST_TARGET/release/ahakey-input-monitor"
+      - name: Package binaries and checksums
+        run: |
+          python scripts/package-runtime.py --target "$RUST_TARGET" --label "$BUILD_LABEL" --require-clean
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: runtime-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.label }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: runtime-*
+          merge-multiple: true
+          path: dist
+      - name: Verify all platform packages
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, tarfile, zipfile
+          from pathlib import Path
+          targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin',
+                     'x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu']
+          sums = []
+          for target in targets:
+              name = f'ahakey-runtime-{os.environ["RELEASE_TAG"]}-{target}'
+              windows = 'windows' in target
+              archive = Path('dist') / (name + ('.zip' if windows else '.tar.gz'))
+              digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+              expected = f'{digest}  {archive.name}\n'
+              if Path(str(archive) + '.sha256').read_text() != expected:
+                  raise SystemExit(f'Checksum mismatch: {archive}')
+              with (zipfile.ZipFile(archive) if windows else tarfile.open(archive)) as package:
+                  def read(path):
+                      if windows:
+                          return package.read(name + '/' + path)
+                      with package.extractfile(name + '/' + path) as member:
+                          return member.read()
+                  info = json.loads(read('BUILD-INFO.json'))
+                  if (info['target'] != target or info['version'] != os.environ['RELEASE_VERSION']
+                      or info['label'] != os.environ['RELEASE_TAG'] or info['sourceDirty']
+                      or info['sourceCommit'] != os.environ['SOURCE_COMMIT']):
+                      raise SystemExit(f'Source binding mismatch: {archive}')
+                  for file in info['files']:
+                      if hashlib.sha256(read(file['name'])).hexdigest() != file['sha256']:
+                          raise SystemExit(f'Content mismatch: {archive}/{file["name"]}')
+              sums.append(expected)
+          Path('dist/SHA256SUMS').write_text(''.join(sums))
+          PY
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          args=(--verify-tag --title "AhaKey Runtime $RELEASE_TAG" --generate-notes)
+          if [[ "$PRERELEASE" == 'true' ]]; then
+            args+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" dist/* "${args[@]}"

@@ -35,6 +35,8 @@ Validated on macOS with Rust 1.98.1, automated tests and the **unmodified Studio
 
 ## Quick Start
 
+For downloads and automated releases, see [packaging and releases](releasing.md).
+
 For application developers, start with the [WebSocket API reference (中文)](../websocket-api.md): discovery, authentication, all RPC methods, events, data models, error recovery, and a runnable read-only client.
 
 For firmware integration, see the [BLE addresses, architecture and parameter guide (中文)](../ble-integration-guide.md).

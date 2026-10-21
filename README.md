@@ -36,6 +36,8 @@ OLED 图片与 GIF 上传见 [接口文档](docs/oled-api.md) 和 [Node.js 示�
 
 ## 快速启动
 
+下载程序与自动发布流程见[打包和发布说明](docs/releasing.md)。
+
 应用开发请先看 [WebSocket 应用开发参考](docs/websocket-api.md)，包含发现、认证、全部 RPC 方法、事件、数据模型、错误恢复和可运行的只读客户端。
 
 与新固件联调请先看 [蓝牙地址、内部架构与参数联调手册](docs/ble-integration-guide.md)。
