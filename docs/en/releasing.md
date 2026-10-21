@@ -1,57 +1,78 @@
 # Runtime packaging and releases
 
-Workflow: [Runtime CD](../../.github/workflows/release.yml).
-Existing Rust Build CI still checks pushes and PRs targeting `main/dev`; CD builds and tests its own release artifacts.
+Workflow: [Runtime CD](../../.github/workflows/release.yml). Rust Build CI checks the code; CD builds and verifies installable artifacts.
 
 | Trigger | Result |
 | --- | --- |
-| Push to `main` | Four-platform development packages, retained as Actions artifacts for 14 days |
-| Actions → Runtime CD → Run workflow | Development packages for the selected ref; no GitHub Release |
-| Push a `v*` tag | Publish a GitHub Release only after every platform passes |
+| Push to `main` | Four-platform development installers, retained in Actions for 14 days |
+| Run workflow, empty `release_tag` | Development installers for the selected ref; no Release |
+| Push a `v*` tag | Publish installers and curated release notes after every platform passes |
+| Run workflow with an existing `release_tag` | Rebuild the original tagged source with current packaging tools and update that Release without moving its tag |
 
-## Packages
+## Installation
 
-| Platform | Rust target | Format | Runtime requirements |
-| --- | --- | --- | --- |
-| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` | macOS 13+ |
-| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` | macOS 13+ |
-| Windows x64 | `x86_64-pc-windows-msvc` | `.zip` | Windows x64 and the Microsoft Visual C++ x64 runtime |
-| Linux x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` | glibc 2.35+, libdbus-1.so.3, BlueZ and D-Bus services |
+| Platform | Filename suffix | Install and run |
+| --- | --- | --- |
+| macOS Apple Silicon | `aarch64-apple-darwin.dmg` | Drag `AhaKey Runtime.app` to Applications, then open it; macOS 13+ |
+| macOS Intel | `x86_64-apple-darwin.dmg` | Same; macOS 13+ |
+| Windows x64 | `x86_64-pc-windows-msvc.exe` | Run Setup and launch from the Start menu; Windows 10+ |
+| Linux x64 | `x86_64-unknown-linux-gnu.deb` | `sudo apt install ./ahakey-runtime-*.deb`, then `ahakey-runtime`; Ubuntu 22.04 or compatible Debian systems |
 
-Each package contains the release binary, LICENSE, bilingual instructions and `BUILD-INFO.json`.
-macOS packages also contain `ahakey-input-monitor` for the same architecture, beside Runtime; enable it with `--input-monitor`.
-The manifest records version, commit, target, compiler and file SHA-256 hashes. Each archive has a `.sha256` sidecar;
-GitHub Releases also include an aggregate `SHA256SUMS` file.
+Windows installs per user to `%LOCALAPPDATA%\Programs\AhaKey Runtime`; uninstall from Settings. CD links the MSVC CRT statically, so the Visual C++ redistributable is not required.
+Linux installs the command at `/usr/bin/ahakey-runtime`, payload at `/usr/lib/ahakey-runtime` and documentation at `/usr/share/doc/ahakey-runtime`. Remove it with `sudo apt remove ahakey-runtime`.
+`dpkg-shlibdeps` determines library dependencies from the binary; BlueZ and D-Bus are also declared.
 
-macOS packages have no Developer ID signature or notarization. Sign both executables when integrating into Studio.
-Windows packages are also unsigned. No personal token or signing credentials are needed for this workflow.
+Runtime has no settings window. macOS runs it in the background; quit it with Activity Monitor. Windows opens a console; Ctrl+C exits. Linux runs in the terminal; Ctrl+C exits. Installation does not enable login autostart or install a system service.
+
+To pass command-line options on macOS:
+
+```sh
+"/Applications/AhaKey Runtime.app/Contents/MacOS/ahakey-runtime-rust" --mock
+```
+
+macOS includes the matching `ahakey-input-monitor` beside Runtime in `Contents/MacOS`. Enable it with `--input-monitor` and grant Input Monitoring permission.
+macOS packages have no Developer ID signature or notarization; Windows installers are unsigned. The OS may block the first launch. Sign executables together when integrating into Studio.
+
+## Verification
+
+Each installer has `.sha256` and `.build-info.json` sidecars. Releases include an aggregate `SHA256SUMS`.
+The embedded `BUILD-INFO.json` binds payload hashes to the version, source commit, target and compiler. The external manifest also contains the installer hash and size.
+When repackaging, `sourceCommit` remains the tagged commit and `packagingCommit` identifies the updated packaging tools.
+
+Native CD jobs mount/copy the macOS app, silently install/uninstall Windows Setup, and extract/verify/install/remove the Debian package. Every platform verifies installed file hashes and runs `--help` and `--mock`, checking discovery, the listening port and clean shutdown after closing parent stdin.
+All packages must pass before publication. Real hardware still needs Bluetooth, input-permission and persistence acceptance.
 
 ## Publish a version
 
-1. Update `package.version` in `Cargo.toml`, synchronize `Cargo.lock`, and merge the commit into `main`.
-2. Tag that commit with the exact Cargo version. For version `0.1.0`:
+1. Update `package.version` in `Cargo.toml` and synchronize `Cargo.lock`.
+2. Write `docs/releases/vVERSION.md` with features, installation instructions, compatibility and limitations. The workflow publishes that document instead of only generating a Git history link.
+3. Commit to `main`, then create and push the exact matching tag:
 
    ```sh
    git tag -a v0.1.0 -m "AhaKey Runtime v0.1.0"
    git push origin v0.1.0
    ```
 
-3. Follow Runtime CD in GitHub Actions. All four platform jobs must pass before publication.
+4. Follow Runtime CD. All four platform jobs must pass.
 
-For `v0.1.0-rc.1`, Cargo must contain `0.1.0-rc.1`; the release is automatically marked as a prerelease.
-Tags must point to commits already contained in `main`. Existing releases are not overwritten; use a new tag for each version.
-Formatting, tests, macOS ARM64 Clippy, helper compilation or package verification failures block publication.
-Automated checks do not replace Bluetooth, input-permission or device-persistence acceptance on real hardware.
+`v0.1.0-rc.1` requires Cargo version `0.1.0-rc.1` and is published as a prerelease. Tags must identify commits already contained in `main`. Tag-triggered publication does not overwrite an existing Release.
+
+## Repackage an existing release
+
+Commit packaging changes and updated notes to `main`. Select Actions → Runtime CD → Run workflow, choose `main` and enter an existing tag such as `v0.1.0` in `release_tag`.
+The workflow builds Runtime from that original tag, uses current packaging tools, and verifies every installer. It then uploads installers and manifests, updates release notes and removes old `.zip` / `.tar.gz` assets. Existing installers of the same name are replaced only by this explicit manual operation.
+Neither the tag nor Runtime source is moved or rewritten.
 
 ## Package locally
 
-For Apple Silicon, from the repository root:
+Apple Silicon example (requires Rust, Swift and macOS `hdiutil`):
 
 ```sh
 MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --locked --release --target aarch64-apple-darwin
 swiftc -O -swift-version 5 -target arm64-apple-macosx13.0 native/macos/InputMonitor.swift -o target/aarch64-apple-darwin/release/ahakey-input-monitor
-python3 scripts/package-runtime.py --target aarch64-apple-darwin --label local-test
+python3 -B scripts/package-runtime.py --target aarch64-apple-darwin --label local-test
+python3 -B scripts/verify-installer.py --target aarch64-apple-darwin --installer dist/ahakey-runtime-local-test-aarch64-apple-darwin.dmg
 ```
 
-Output goes to the ignored `dist/` directory. Existing packages are not overwritten; use `--output /new/output/directory`.
-Local dirty-source packages are marked `sourceDirty=true`; CD rejects them with `--require-clean`.
+Windows additionally requires Inno Setup 6; Linux requires `dpkg-dev` and the development libraries used for linking. Build installers on their respective OS.
+Output goes to ignored `dist/`. Existing packages are not overwritten; use `--output /new/directory` to retry. Local dirty checkouts are marked `sourceDirty=true`; CD uses `--require-clean`.
