@@ -320,7 +320,7 @@ readback 是连接期间读取到的设备内容。成功写入后清除旧 read
 - `changes.modes` 包含 1–4 个不同模式，每个模式必须提交全部四个角色和全部九种状态灯效，不能只提交其中一个字段。
 - `changes` 是 `Configuration`，不是 `ConfigurationDocument` 或 RPC 信封。字段范围见[数据模型](#数据模型)。
 
-即使请求提交全部四个模式，**WebSocket 也不能绕过未知基线完成初始化**。读回不完整时，操作人员可显式运行 `--initialize FILE --device-id ID`，它会覆盖全部四模式和亮度，具体步骤见 [README](../README.md#real-hardware-and-first-configuration)。应用只需改键时使用下节接口。
+即使请求提交全部四个模式，**WebSocket 也不能绕过未知基线完成初始化**。读回不完整时，操作人员可显式运行 `--initialize FILE --device-id ID`，它会覆盖全部四模式和亮度，具体步骤见 [README](../README.md#真机与首次初始化)。应用只需改键时使用下节接口。
 
 ## 独立改键
 
@@ -769,7 +769,7 @@ process.once('SIGINT', () => ws.close());
 - [IPC 实现](../src/ipc/mod.rs)：认证、请求解码、分发与升级限制。
 - [Runtime 实现](../src/runtime/mod.rs)：快照、事件、基线、幂等与操作执行。
 - [Wire 模型](../src/wire.rs)、[配置模型](../src/configuration/mod.rs)、[改键模型](../src/configuration/keymap.rs)、[输入模型](../src/input/mod.rs)。
-- [初版架构](runtime-v1.md)、[独立改键说明](keymap-api.md)、[输入监听集成](input-monitoring.md)。
+- [初版架构](runtime-v1.md)、[独立改键说明](keymap-api.md)、[输入监听集成](en/input-monitoring.md)。
 - [固件联调手册](ble-integration-guide.md)、[调试日志](debug-mode.md)。
 
 文档核对日期：2026 年 10 月 19 日。接口变化时应同步更新本参考；旧版固定 fixtures 不代表新增接口的完整清单。
