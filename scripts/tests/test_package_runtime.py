@@ -1,18 +1,27 @@
-"""Verify distributed archive contents, executable modes and architecture gates."""
+"""Verify the shared installer payload and reject corrupt release artifacts."""
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import struct
-import tarfile
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
-import zipfile
 
-SPEC = importlib.util.spec_from_file_location('package_runtime', Path(__file__).parents[1] / 'package-runtime.py')
-PACKAGER = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(PACKAGER)
+SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), SCRIPTS / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PACKAGER = load('package-runtime')
+PUBLISHER = load('publish-release')
+VERIFIER = load('verify-installer')
 
 
 class ReleasePackages(unittest.TestCase):
@@ -20,9 +29,9 @@ class ReleasePackages(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.repo = Path(self.directory.name)
-        self.binary_dir = self.repo / 'binaries'
-        self.binary_dir.mkdir()
-        self.output = self.repo / 'dist'
+        self.binaries = self.repo / 'binaries'
+        self.binaries.mkdir()
+        self.stage = self.repo / 'payload'
         (self.repo / 'LICENSE').write_text('Fixture license\n')
         self.info = {'version': '0.1.0', 'sourceCommit': '1' * 40, 'sourceDirty': False,
                      'rustc': 'fixture compiler', 'targetDirectory': 'not-distributed'}
@@ -31,83 +40,63 @@ class ReleasePackages(unittest.TestCase):
         data = bytearray(64)
         data[:4] = b'\xcf\xfa\xed\xfe'
         struct.pack_into('<I', data, 4, architecture)
-        (self.binary_dir / name).write_bytes(data)
+        (self.binaries / name).write_bytes(data)
 
-    def package(self, target, label='v0.1.0'):
-        return PACKAGER.package_runtime(self.repo, self.binary_dir, self.output, target, label, self.info)
-
-    def verify(self, archive, read, prefix):
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        self.assertEqual(Path(str(archive) + '.sha256').read_text(), f'{digest}  {archive.name}\n')
-        info = json.loads(read(prefix + '/BUILD-INFO.json'))
-        self.assertEqual(info['sourceCommit'], self.info['sourceCommit'])
-        self.assertEqual(info['version'], '0.1.0')
+    def test_macos_payload_keeps_helper_manifest_and_executable_modes(self):
+        for name in ['ahakey-runtime-rust', 'ahakey-input-monitor']:
+            self.macho(name)
+        info = PACKAGER.stage_runtime(self.repo, self.binaries, self.stage, 'aarch64-apple-darwin', 'v0.1.0', self.info)
         self.assertNotIn('targetDirectory', info)
-        for file in info['files']:
-            content = read(prefix + '/' + file['name'])
-            self.assertEqual(file['sha256'], hashlib.sha256(content).hexdigest())
-            self.assertEqual(file['bytes'], len(content))
-        return info
+        self.assertEqual({file['name'] for file in info['files']},
+                         {'ahakey-runtime-rust', 'ahakey-input-monitor', 'LICENSE', 'README.txt'})
+        VERIFIER.verify_payload(self.stage, self.stage, info)
+        (self.stage / 'ahakey-input-monitor').write_bytes(b'corrupt helper')
+        with self.assertRaisesRegex(ValueError, 'Installed content mismatch'):
+            VERIFIER.verify_payload(self.stage, self.stage, info)
 
-    def test_macos_archive_keeps_runtime_helper_and_executable_modes(self):
-        for binary in ['ahakey-runtime-rust', 'ahakey-input-monitor']:
-            self.macho(binary)
-        original = tarfile.TarFile.gettarinfo
-
-        def windows_metadata(tar, *args, **kwargs):
-            member = original(tar, *args, **kwargs)
-            if member.isfile():
-                member.mode = 0o666
-            return member
-
-        # Windows does not expose Unix executable bits, even after chmod(0755).
-        with patch.object(tarfile.TarFile, 'gettarinfo', windows_metadata):
-            archive = self.package('aarch64-apple-darwin')
-        prefix = archive.name.removesuffix('.tar.gz')
-        with tarfile.open(archive) as package:
-            def read(name):
-                with package.extractfile(name) as file:
-                    return file.read()
-            info = self.verify(archive, read, prefix)
-            self.assertEqual(info['target'], 'aarch64-apple-darwin')
-            for binary in ['ahakey-runtime-rust', 'ahakey-input-monitor']:
-                self.assertEqual(package.getmember(prefix + '/' + binary).mode, 0o755)
-            self.assertEqual({file['name'] for file in info['files']},
-                             {'ahakey-runtime-rust', 'ahakey-input-monitor', 'LICENSE', 'README.txt'})
-
-    def test_windows_zip_contains_the_exe_and_verifiable_manifest(self):
+    def test_windows_payload_checks_pe_architecture(self):
         data = bytearray(256)
         data[:2] = b'MZ'
         struct.pack_into('<I', data, 60, 128)
         data[128:132] = b'PE\0\0'
         struct.pack_into('<H', data, 132, 0x8664)
-        (self.binary_dir / 'ahakey-runtime-rust.exe').write_bytes(data)
-        archive = self.package('x86_64-pc-windows-msvc')
-        with zipfile.ZipFile(archive) as package:
-            info = self.verify(archive, package.read, archive.stem)
-            self.assertEqual(info['target'], 'x86_64-pc-windows-msvc')
-            self.assertEqual(package.read(archive.stem + '/ahakey-runtime-rust.exe'), data)
-            self.assertNotIn('ahakey-input-monitor', {file['name'] for file in info['files']})
+        binary = self.binaries / 'ahakey-runtime-rust.exe'
+        binary.write_bytes(data)
+        info = PACKAGER.stage_runtime(self.repo, self.binaries, self.stage, 'x86_64-pc-windows-msvc', 'v0.1.0', self.info)
+        VERIFIER.verify_payload(self.stage, self.stage, info)
+        struct.pack_into('<H', data, 132, 0x14C)
+        binary.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, 'not a x86_64-pc-windows-msvc'):
+            PACKAGER.check_architecture(binary, 'x86_64-pc-windows-msvc')
 
-    def test_missing_or_wrong_architecture_helper_blocks_packaging(self):
+    def test_wrong_helper_and_unsafe_label_block_packaging(self):
         self.macho('ahakey-runtime-rust')
-        with self.assertRaises(FileNotFoundError):
-            self.package('aarch64-apple-darwin')
         self.macho('ahakey-input-monitor', 0x01000007)
         with self.assertRaisesRegex(ValueError, 'not a aarch64-apple-darwin'):
-            self.package('aarch64-apple-darwin')
-        self.assertFalse(self.output.exists())
-
-    def test_existing_archives_and_unsafe_labels_are_rejected(self):
-        self.macho('ahakey-runtime-rust')
-        self.macho('ahakey-input-monitor')
-        archive = self.package('aarch64-apple-darwin')
-        original = archive.read_bytes()
-        with self.assertRaises(FileExistsError):
-            self.package('aarch64-apple-darwin')
-        self.assertEqual(archive.read_bytes(), original)
+            PACKAGER.stage_runtime(self.repo, self.binaries, self.stage, 'aarch64-apple-darwin', 'v0.1.0', self.info)
+        self.assertFalse(self.stage.exists())
         with self.assertRaises(ValueError):
-            self.package('aarch64-apple-darwin', '../outside')
+            PACKAGER.package_runtime(self.repo, self.binaries, self.repo / 'dist',
+                                     'aarch64-apple-darwin', '../outside', self.info)
+
+    def test_release_gate_rejects_changed_installer_and_wrong_source(self):
+        dist = self.repo / 'dist'
+        dist.mkdir()
+        for target in PUBLISHER.TARGETS:
+            name = f'ahakey-runtime-v0.1.0-{target}{PUBLISHER.installer_suffix(target)}'
+            installer = dist / name
+            installer.write_bytes(b'Fixture native container')
+            digest = hashlib.sha256(installer.read_bytes()).hexdigest()
+            Path(str(installer) + '.sha256').write_text(f'{digest}  {name}\n')
+            info = dict(self.info, target=target, label='v0.1.0', installer={
+                'name': name, 'sha256': digest, 'bytes': installer.stat().st_size})
+            Path(str(installer) + '.build-info.json').write_text(json.dumps(info))
+        PUBLISHER.verify_packages(dist, 'v0.1.0', '0.1.0', '1' * 40)
+        with self.assertRaisesRegex(ValueError, 'checksum/source mismatch'):
+            PUBLISHER.verify_packages(dist, 'v0.1.0', '0.1.0', '2' * 40)
+        installer.write_bytes(b'Corrupt download')
+        with self.assertRaisesRegex(ValueError, 'checksum/source mismatch'):
+            PUBLISHER.verify_packages(dist, 'v0.1.0', '0.1.0', '1' * 40)
 
 
 if __name__ == '__main__':

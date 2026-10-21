@@ -5,12 +5,17 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '重打包已有 Release（例如 v0.1.0）；留空只构建开发包'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: runtime-cd-${{ github.ref }}
+  group: runtime-cd-${{ github.ref }}-${{ inputs.release_tag || 'development' }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
@@ -23,35 +28,47 @@ jobs:
       label: ${{ steps.version.outputs.label }}
       version: ${{ steps.version.outputs.version }}
       commit: ${{ steps.version.outputs.commit }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
+      update_existing: ${{ steps.version.outputs.update_existing }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
+          path: build-tools
       - name: Validate version and source
         id: version
+        working-directory: build-tools
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          MANUAL_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           python3 - <<'PY'
           import os, subprocess, tomllib
           from pathlib import Path
-          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
-          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          manual = os.environ.get('MANUAL_RELEASE_TAG', '').strip()
           tagged = os.environ['EVENT_NAME'] == 'push' and os.environ['REF_TYPE'] == 'tag'
-          if tagged:
-              label = os.environ['REF_NAME']
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if manual:
+              if not manual.startswith('v') or '/' in manual:
+                  raise SystemExit('release_tag must be a version tag such as v0.1.0')
+              commit = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{manual}^{{commit}}'], text=True).strip()
+          cargo = subprocess.check_output(['git', 'show', f'{commit}:Cargo.toml'], text=True)
+          version = tomllib.loads(cargo)['package']['version']
+          if tagged or manual:
+              label = manual or os.environ['REF_NAME']
               if label != 'v' + version:
                   raise SystemExit(f'Tag {label} must match Cargo.toml v{version}')
               subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+              notes = Path('docs/releases') / f'{label}.md'
+              if not notes.is_file() or len(notes.read_text().strip()) < 200:
+                  raise SystemExit(f'Write release notes first: {notes}')
           else:
               label = f'{version}-dev.{commit[:12]}'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for key, value in {'label': label, 'version': version, 'commit': commit,
-                                 'prerelease': str('-' in version.split('+')[0]).lower()}.items():
+                                 'update_existing': str(bool(manual)).lower()}.items():
                   output.write(f'{key}={value}\n')
           PY
 
@@ -79,6 +96,7 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: source
     env:
       RUST_TARGET: ${{ matrix.target }}
       BUILD_LABEL: ${{ needs.prepare.outputs.label }}
@@ -86,7 +104,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          path: build-tools
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
           ref: ${{ needs.prepare.outputs.commit }}
+          path: source
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -95,7 +118,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev
+          sudo apt-get install -y pkg-config libdbus-1-dev dpkg-dev
+      - name: Link Windows CRT statically
+        if: runner.os == 'Windows'
+        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy --target "$RUST_TARGET"
@@ -103,7 +129,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Check release packager
-        run: python -B -m unittest discover -s scripts/tests -p 'test_package_runtime.py'
+        run: python -B -m unittest discover -s "$GITHUB_WORKSPACE/build-tools/scripts/tests" -p 'test_package_runtime.py'
       - name: Build and test release
         run: |
           cargo build --locked --release --target "$RUST_TARGET"
@@ -118,19 +144,35 @@ jobs:
         run: |
           swiftc -O -swift-version 5 -target "$SWIFT_TARGET" native/macos/InputMonitor.swift \
             -o "target/$RUST_TARGET/release/ahakey-input-monitor"
-      - name: Package binaries and checksums
+      - name: Build native installer and checksums
         run: |
-          python scripts/package-runtime.py --target "$RUST_TARGET" --label "$BUILD_LABEL" --require-clean
+          python "$GITHUB_WORKSPACE/build-tools/scripts/package-runtime.py" --repo "$PWD" \
+            --target "$RUST_TARGET" --label "$BUILD_LABEL" --require-clean --packaging-commit "$GITHUB_SHA"
+      - name: Verify installed package
+        run: |
+          case "$RUST_TARGET" in
+            *apple-darwin) extension=dmg ;;
+            *windows-msvc) extension=exe ;;
+            *) extension=deb ;;
+          esac
+          python "$GITHUB_WORKSPACE/build-tools/scripts/verify-installer.py" --target "$RUST_TARGET" \
+            --installer "dist/ahakey-runtime-$BUILD_LABEL-$RUST_TARGET.$extension"
+      - name: Check Debian installation and removal
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          ahakey-runtime --help
+          sudo apt-get remove -y ahakey-runtime
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runtime-${{ matrix.target }}
-          path: dist/*
+          path: source/dist/*
           if-no-files-found: error
           overwrite: true
           retention-days: 14
 
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: [prepare, package]
     runs-on: ubuntu-24.04
     permissions:
@@ -139,53 +181,26 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.label }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
-      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      UPDATE_EXISTING: ${{ needs.prepare.outputs.update_existing }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: build-tools
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runtime-*
           merge-multiple: true
           path: dist
-      - name: Verify all platform packages
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os, tarfile, zipfile
-          from pathlib import Path
-          targets = ['aarch64-apple-darwin', 'x86_64-apple-darwin',
-                     'x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu']
-          sums = []
-          for target in targets:
-              name = f'ahakey-runtime-{os.environ["RELEASE_TAG"]}-{target}'
-              windows = 'windows' in target
-              archive = Path('dist') / (name + ('.zip' if windows else '.tar.gz'))
-              digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
-              expected = f'{digest}  {archive.name}\n'
-              if Path(str(archive) + '.sha256').read_text() != expected:
-                  raise SystemExit(f'Checksum mismatch: {archive}')
-              with (zipfile.ZipFile(archive) if windows else tarfile.open(archive)) as package:
-                  def read(path):
-                      if windows:
-                          return package.read(name + '/' + path)
-                      with package.extractfile(name + '/' + path) as member:
-                          return member.read()
-                  info = json.loads(read('BUILD-INFO.json'))
-                  if (info['target'] != target or info['version'] != os.environ['RELEASE_VERSION']
-                      or info['label'] != os.environ['RELEASE_TAG'] or info['sourceDirty']
-                      or info['sourceCommit'] != os.environ['SOURCE_COMMIT']):
-                      raise SystemExit(f'Source binding mismatch: {archive}')
-                  for file in info['files']:
-                      if hashlib.sha256(read(file['name'])).hexdigest() != file['sha256']:
-                          raise SystemExit(f'Content mismatch: {archive}/{file["name"]}')
-              sums.append(expected)
-          Path('dist/SHA256SUMS').write_text(''.join(sums))
-          PY
-      - name: Publish GitHub Release
+      - name: Publish verified installers and release notes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          args=(--verify-tag --title "AhaKey Runtime $RELEASE_TAG" --generate-notes)
-          if [[ "$PRERELEASE" == 'true' ]]; then
-            args+=(--prerelease --latest=false)
+          args=()
+          if [[ "$UPDATE_EXISTING" == 'true' ]]; then
+            args+=(--update-existing)
           fi
-          gh release create "$RELEASE_TAG" dist/* "${args[@]}"
+          python3 build-tools/scripts/publish-release.py --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_COMMIT" \
+            --notes "build-tools/docs/releases/$RELEASE_TAG.md" "${args[@]}"
