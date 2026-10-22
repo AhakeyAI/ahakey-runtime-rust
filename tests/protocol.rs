@@ -109,15 +109,18 @@ fn invalid_write_groups_never_truncate_or_sanitize() {
     assert!(serde_json::from_value::<Apply>(request).is_err());
 }
 #[test]
-fn status_frames_handle_old_firmware_unknowns_and_malformed_bytes() {
-    let bytes = [0xaa, 0xbb, 0, 82, 0xe0, 1, 4, 3, 6, 0, 60, 0xcc, 0xdd];
+fn status_frames_preserve_unknown_fields_and_reject_malformed_envelopes() {
+    let bytes = [0xaa, 0xbb, 0, 82, 50, 1, 0, 3, 6, 0, 60, 0xcc, 0xdd];
     let state = X1State::from_bytes(&bytes).unwrap().0;
     assert_eq!(state.battery, Some(82));
     assert_eq!(state.lever, Some("automatic"));
     assert_eq!(state.brightness, Some(60));
     assert_eq!(state.work_mode, 3);
-    let old = [0xaa, 0xbb, 0, 255, 0, 1, 0, 0, 6, 2, 0xcc, 0xdd];
-    let state = X1State::from_bytes(&old).unwrap().0;
+    let mut unknown = bytes;
+    unknown[3] = 255;
+    unknown[9] = 2;
+    unknown[10] = 0;
+    let state = X1State::from_bytes(&unknown).unwrap().0;
     assert_eq!(state.battery, None);
     assert_eq!(state.lever, None);
     assert_eq!(state.brightness, None);

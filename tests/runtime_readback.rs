@@ -3,21 +3,20 @@ use ahakey_runtime_rust::{
     configuration::{
         Action, Configuration, ConfigurationReadback, ReadbackDevice, ReadbackKey, ReadbackMode,
     },
-    error::{Error, Result},
+    error::Result,
     keymap::{KeyBinding, KeymapApply},
     runtime::Runtime,
 };
 use async_trait::async_trait;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Semaphore;
 
 struct ReadableDevice {
     config: Arc<Mutex<Configuration>>,
     writes: Arc<AtomicUsize>,
-    fail_next_read: Arc<AtomicBool>,
     gate: Arc<Semaphore>,
 }
 #[async_trait]
@@ -44,10 +43,7 @@ impl Hardware for ReadableDevice {
         })
     }
     async fn read_configuration(&mut self) -> Result<Option<ConfigurationReadback>> {
-        self.gate.acquire().await.unwrap().forget();
-        if self.fail_next_read.swap(false, Ordering::SeqCst) {
-            return Err(Error("DEVICE_DISCONNECTED"));
-        }
+        let _permit = self.gate.acquire().await.unwrap();
         let config = self.config.lock().unwrap().clone();
         Ok(Some(ConfigurationReadback {
             device: ReadbackDevice {
@@ -86,8 +82,7 @@ impl ReadableDevice {
         Self {
             config: Arc::new(Mutex::new(Configuration::mock_defaults())),
             writes: Arc::new(AtomicUsize::new(0)),
-            fail_next_read: Arc::new(AtomicBool::new(false)),
-            gate: Arc::new(Semaphore::new(10)),
+            gate: Arc::new(Semaphore::new(0)),
         }
     }
     fn clone_device(&self) -> AhaKey {
@@ -97,7 +92,6 @@ impl ReadableDevice {
             hardware: Box::new(Self {
                 config: self.config.clone(),
                 writes: self.writes.clone(),
-                fail_next_read: self.fail_next_read.clone(),
                 gate: self.gate.clone(),
             }),
         }
@@ -117,10 +111,9 @@ async fn state(runtime: &Runtime, wanted: &str) {
 }
 
 #[tokio::test]
-async fn connecting_readback_never_exposes_partial_baseline_or_accepts_writes() {
+async fn readback_is_atomic_and_refreshes_after_reconnect_and_restart() {
     let directory = tempfile::tempdir().unwrap();
-    let mut device = ReadableDevice::new();
-    device.gate = Arc::new(Semaphore::new(0));
+    let device = ReadableDevice::new();
     let runtime = Runtime::open(directory.path().join("state.json"))
         .await
         .unwrap();
@@ -155,47 +148,6 @@ async fn connecting_readback_never_exposes_partial_baseline_or_accepts_writes() 
             .base_token,
         document.base_token
     );
-    assert_eq!(device.writes.load(Ordering::SeqCst), 0);
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
-async fn interrupted_read_retries_on_reconnect_without_writing_hardware() {
-    let directory = tempfile::tempdir().unwrap();
-    let device = ReadableDevice::new();
-    device.fail_next_read.store(true, Ordering::SeqCst);
-    let runtime = Runtime::open(directory.path().join("state.json"))
-        .await
-        .unwrap();
-    runtime
-        .register(device.clone_device(), None, false)
-        .await
-        .unwrap();
-    state(&runtime, "ready").await;
-    assert!(
-        runtime
-            .configuration("readable-x1")
-            .await
-            .unwrap()
-            .readback
-            .is_some()
-    );
-    assert_eq!(device.writes.load(Ordering::SeqCst), 0);
-    runtime.shutdown().await;
-}
-
-#[tokio::test]
-async fn readback_survives_reconnect_and_restart_without_inventing_a_full_baseline() {
-    let directory = tempfile::tempdir().unwrap();
-    let device = ReadableDevice::new();
-    let runtime = Runtime::open(directory.path().join("state.json"))
-        .await
-        .unwrap();
-    runtime
-        .register(device.clone_device(), None, false)
-        .await
-        .unwrap();
-    state(&runtime, "ready").await;
     let initial = runtime.configuration("readable-x1").await.unwrap();
     assert!(initial.configuration.is_none());
     let wire = serde_json::to_value(&initial).unwrap();

@@ -4,8 +4,6 @@ use ahakey_runtime_rust::{
     error::{Error, Result},
     ipc,
     runtime::Runtime,
-    storage::{Journal, Record, Storage},
-    wire::Operation,
 };
 use async_trait::async_trait;
 use futures_util::SinkExt;

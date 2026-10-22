@@ -19,7 +19,6 @@ def load(name):
 
 
 PACKAGER = load('package-runtime')
-PUBLISHER = load('publish-release')
 VERIFIER = load('verify-installer')
 NOTES = load('release_notes')
 
@@ -33,8 +32,7 @@ class ReleasePackages(unittest.TestCase):
         self.binaries.mkdir()
         self.stage = self.repo / 'payload'
         (self.repo / 'LICENSE').write_text('Fixture license\n')
-        self.info = {'version': '0.1.0', 'sourceCommit': '1' * 40, 'sourceDirty': False,
-                     'targetDirectory': 'not-distributed'}
+        self.info = {'version': '0.1.0', 'sourceCommit': '1' * 40}
 
     def macho(self, name, architecture=0x0100000C):
         data = bytearray(64)

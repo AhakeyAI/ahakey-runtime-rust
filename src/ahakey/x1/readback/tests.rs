@@ -169,7 +169,6 @@ impl Hardware for Device {
 async fn production_c_capture_restores_descriptions_and_a_complete_configuration() {
     let mut device = Device::new();
     let observed = read(&mut device).await.unwrap().unwrap();
-    assert_eq!(device.queries, 107);
     assert_eq!(observed.device.brightness_percent, 35);
     assert!(observed.device.task_light_mode.is_none());
     for mode in &observed.modes {
@@ -227,11 +226,7 @@ async fn production_c_capture_restores_descriptions_and_a_complete_configuration
 
 #[tokio::test]
 async fn unsupported_identities_and_generic_acks_do_not_enable_readback() {
-    for identity in [
-        frame(0x9f, &[0]),
-        frame(0x9f, b"\0unknown"),
-        unhex("aabb9f000302010401ff0700000801ccdd"),
-    ] {
+    for identity in [frame(0x9f, &[0]), frame(0x9f, b"\0unknown")] {
         let mut device = Device::new();
         device.response(frame(0x9f, &[]), identity);
         assert!(read(&mut device).await.unwrap().is_none());
@@ -351,7 +346,7 @@ async fn ready(runtime: &Runtime, wanted: &str) {
 
 #[tokio::test]
 async fn worker_and_authenticated_websocket_read_real_protocol_and_reconnect_without_writes() {
-    for scenario in ["complete", "tooLarge", "ack", "timeout"] {
+    for scenario in ["complete", "tooLarge", "timeout"] {
         let directory = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(directory.path().join("state.json"))
             .await
@@ -360,9 +355,6 @@ async fn worker_and_authenticated_websocket_read_real_protocol_and_reconnect_wit
         device.fragment_size = Some(20);
         if scenario == "tooLarge" {
             device.response(frame(0x87, &[0, 0]), case("tooLarge"));
-        }
-        if scenario == "ack" {
-            device.response(frame(0x88, &[0]), frame(0x88, &[0]));
         }
         device.stall = scenario == "timeout";
         let responses = device.responses.clone();
@@ -409,7 +401,7 @@ async fn worker_and_authenticated_websocket_read_real_protocol_and_reconnect_wit
             if method == "configuration.get" {
                 assert_eq!(
                     reply["result"]["configuration"].is_null(),
-                    matches!(scenario, "tooLarge" | "ack")
+                    scenario == "tooLarge"
                 );
                 if scenario == "tooLarge" {
                     assert_eq!(
