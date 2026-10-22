@@ -59,7 +59,8 @@ cargo run --locked -- --mock
 | `ble.connect` / `ble.connectResult` | 连接尝试及结果 |
 | `ble.services` | 实际发现的服务、特征 UUID 与属性 |
 | `ble.tx` | 准备发送的原始命令；不代表 GATT 写入或固件执行成功 |
-| `ble.rx` | 收到的通知，包含原始 hex、UUID、长度、帧格式是否有效 |
+| `ble.rx` | 每条原始通知，包含 hex、UUID、长度和首尾标记检查结果 |
+| `ble.frame` | 跨通知拼接后的完整协议帧 |
 | `ble.interleaved` | 等待某条命令时收到其他 opcode；可能是正常状态推送 |
 | `ble.invalidStatus` | opcode 为状态但内容不能被当前状态解析器接受 |
 | `ble.exchange` | 命令耗时、失败阶段及错误；`error:null` 表示现有协议确认成功 |
@@ -70,7 +71,8 @@ cargo run --locked -- --mock
 | `ble.linkLost` / `ble.disconnect` | 观察到连接失效或主动断开 |
 
 例如新固件推送了 Runtime 不认识的 opcode，它仍会出现在 `ble.rx`，不会自动转成
-业务事件或当成状态。无效帧也先记录，再按原协议规则过滤。
+业务事件或当成状态。原始通知先记录，再按协议规则拼接和解析。
+分片通知的 `validFrame:false` 只表示该片段没有完整首尾；完整回复应查看 `ble.frame`。
 `ble.exchange` 的 `phase` 可区分 GATT 写入失败与等待固件响应超时；耗时是电脑侧
 一次交换用时，不等于物理按键延迟。日志不改变当前 ACK 和状态确认标准。
 

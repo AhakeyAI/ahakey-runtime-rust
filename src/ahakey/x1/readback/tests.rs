@@ -43,6 +43,7 @@ impl Drop for Cancelled {
 }
 struct Device {
     responses: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
+    fragment_size: Option<usize>,
     queries: usize,
     round: usize,
     versions: Vec<Vec<u8>>,
@@ -62,6 +63,7 @@ impl Device {
                     .map(|(q, r)| (unhex(q), unhex(r.as_str().unwrap())))
                     .collect(),
             )),
+            fragment_size: None,
             queries: 0,
             round: 0,
             versions: vec![],
@@ -100,13 +102,33 @@ impl CommandTransport for Device {
         if command == frame(0x87, &[0, 0]) && !self.versions.is_empty() {
             return Ok(self.versions[(self.round - 1).min(self.versions.len() - 1)].clone());
         }
-        Ok(self
+        let response = self
             .responses
             .lock()
             .unwrap()
             .get(command)
             .expect("query must exist in production C capture")
-            .clone())
+            .clone();
+        if let Some(size) = self.fragment_size {
+            use btleplug::api::{ValueNotification, bleuuid::uuid_from_u16};
+            let fragments: Vec<_> = response
+                .chunks(size)
+                .map(|value| ValueNotification {
+                    service_uuid: uuid_from_u16(0x7340),
+                    uuid: uuid_from_u16(0x7344),
+                    value: value.to_vec(),
+                })
+                .collect();
+            let mut notifications = super::super::notifications::Notifications::new(
+                Box::pin(
+                    futures_util::stream::iter(fragments).chain(futures_util::stream::pending()),
+                ),
+                Box::pin(futures_util::stream::pending()),
+            );
+            notifications.response(command[2]).await
+        } else {
+            Ok(response)
+        }
     }
 }
 #[async_trait]
@@ -335,6 +357,7 @@ async fn worker_and_authenticated_websocket_read_real_protocol_and_reconnect_wit
             .await
             .unwrap();
         let mut device = Device::new();
+        device.fragment_size = Some(20);
         if scenario == "tooLarge" {
             device.response(frame(0x87, &[0, 0]), case("tooLarge"));
         }

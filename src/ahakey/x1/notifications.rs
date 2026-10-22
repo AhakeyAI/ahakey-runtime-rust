@@ -8,11 +8,14 @@ use btleplug::api::{ValueNotification, bleuuid::uuid_from_u16};
 use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
 
+mod framing;
+
 /// One consumer routes both command replies and unsolicited X1 state updates.
 /// The most recent state survives notifications interleaved with command ACKs.
 pub(super) struct Notifications {
     pub frames: Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
     pub disconnects: Pin<Box<dyn Stream<Item = ()> + Send>>,
+    decoder: framing::Frames,
     state: Option<HardwareState>,
     changed: bool,
     device_id: Option<String>,
@@ -26,6 +29,7 @@ impl Notifications {
         Self {
             frames,
             disconnects,
+            decoder: framing::Frames::default(),
             state: None,
             changed: false,
             device_id: None,
@@ -39,13 +43,28 @@ impl Notifications {
 
     async fn next_frame(&mut self) -> Result<Vec<u8>> {
         loop {
+            if let Some(frame) = self.decoder.next() {
+                crate::debug::event("ble.frame", || {
+                    serde_json::json!({
+                        "deviceId":self.device_id, "frame":crate::debug::bytes(&frame),
+                    })
+                });
+                return Ok(frame);
+            }
             let notification = tokio::select! {
                 biased;
                 _ = self.disconnects.next() => {
+                    self.decoder = framing::Frames::default();
                     crate::debug::event("ble.linkLost", || serde_json::json!({"deviceId":self.device_id}));
                     return Err(Error("DEVICE_DISCONNECTED"));
                 },
-                frame = self.frames.next() => frame.ok_or(Error("DEVICE_DISCONNECTED"))?,
+                frame = self.frames.next() => match frame {
+                    Some(frame) => frame,
+                    None => {
+                        self.decoder = framing::Frames::default();
+                        return Err(Error("DEVICE_DISCONNECTED"));
+                    }
+                },
             };
             crate::debug::event("ble.rx", || {
                 serde_json::json!({
@@ -57,9 +76,10 @@ impl Notifications {
             });
             if notification.service_uuid == uuid_from_u16(0x7340)
                 && notification.uuid == uuid_from_u16(0x7344)
-                && valid_frame(&notification.value)
+                && let Err(error) = self.decoder.push(&notification.value)
             {
-                return Ok(notification.value);
+                self.decoder = framing::Frames::default();
+                return Err(error);
             }
         }
     }
@@ -130,135 +150,4 @@ impl Notifications {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::stream;
-
-    fn session(frames: Vec<Vec<u8>>) -> Notifications {
-        Notifications::new(
-            Box::pin(
-                stream::iter(frames.into_iter().map(|value| ValueNotification {
-                    service_uuid: uuid_from_u16(0x7340),
-                    uuid: uuid_from_u16(0x7344),
-                    value,
-                }))
-                .chain(stream::pending()),
-            ),
-            Box::pin(stream::pending()),
-        )
-    }
-    fn status(mode: u8, brightness: u8) -> Vec<u8> {
-        vec![
-            0xaa, 0xbb, 0, 82, 0, 1, 4, mode, 0, 1, brightness, 0xcc, 0xdd,
-        ]
-    }
-    fn mode(mode: u8, sequence: u8) -> Vec<u8> {
-        vec![0xaa, 0xbb, 0x9b, 0, mode, 1, sequence, 0xcc, 0xdd]
-    }
-
-    #[tokio::test]
-    async fn only_exact_key_read_status_two_and_three_reach_the_decoder() {
-        use crate::ahakey::x1::commands::frame;
-        for code in [2, 3] {
-            let error = frame(0x87, &[code]);
-            assert_eq!(
-                session(vec![error.clone()]).response(0x87).await.unwrap(),
-                error
-            );
-        }
-        for (opcode, payload) in [
-            (0x87, vec![1]),
-            (0x87, vec![2, 0]),
-            (0x87, vec![3, 0]),
-            (0x85, vec![3]),
-        ] {
-            assert_eq!(
-                session(vec![frame(opcode, &payload)])
-                    .response(opcode)
-                    .await
-                    .unwrap_err()
-                    .0,
-                "DEVICE_REJECTED"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn lever_status_with_connection_flags_survives_unrelated_capability_reply() {
-        // Extended status frames may append connection flags.
-        let status = |lever| vec![0xaa, 0xbb, 0, 92, 50, 1, 4, 2, 0, lever, 35, 3, 0xcc, 0xdd];
-        let up = status(0);
-        let mut input = session(vec![
-            up.clone(),
-            up,
-            vec![
-                0xaa, 0xbb, 0x9f, 0, 3, 2, 1, 4, 1, 0xff, 7, 0, 0, 6, 1, 0xcc, 0xdd,
-            ],
-            status(1),
-            status(2),
-            status(0),
-        ]);
-        input.response(0).await.unwrap();
-        for lever in [Some("automatic"), Some("manual"), None, Some("automatic")] {
-            let state =
-                tokio::time::timeout(std::time::Duration::from_millis(100), input.next_state())
-                    .await
-                    .expect("a lever change must not wait for another command")
-                    .unwrap();
-            assert_eq!(state.lever, lever);
-            assert_eq!(state.work_mode, 2);
-        }
-        // An idle connected device waits; silence is not DEVICE_TIMEOUT.
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), input.next_state(),)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn mode_notifications_survive_ack_wait_and_brightness_confirmation() {
-        let mut input = session(vec![
-            status(0, 35),
-            mode(3, 255),
-            vec![0xaa, 0xbb, 0x85, 0, 0xcc, 0xdd],
-            status(3, 61),
-            mode(1, 0),
-        ]);
-        input.response(0).await.unwrap();
-        assert_eq!(input.next_state().await.unwrap().work_mode, 0);
-        input.response(0x85).await.unwrap();
-        input.response(0).await.unwrap();
-        let state = input.next_state().await.unwrap();
-        assert_eq!(state.work_mode, 3);
-        assert_eq!(state.brightness, Some(61));
-        assert_eq!(input.next_state().await.unwrap().work_mode, 1);
-    }
-
-    #[tokio::test]
-    async fn invalid_mode_frames_do_not_change_state_or_complete_other_commands() {
-        let mut invalid = mode(2, 1);
-        invalid[3] = 1;
-        let mut input = session(vec![
-            status(0, 35),
-            mode(4, 1),
-            invalid,
-            mode(2, 2),
-            vec![0xaa, 0xbb, 0x85, 0, 0xcc, 0xdd],
-        ]);
-        input.response(0).await.unwrap();
-        input.next_state().await.unwrap();
-        input.response(0x85).await.unwrap();
-        assert_eq!(input.next_state().await.unwrap().work_mode, 2);
-    }
-
-    #[tokio::test]
-    async fn link_loss_wakes_idle_notification_reader() {
-        let mut input = session(vec![]);
-        input.disconnects = Box::pin(stream::iter([()]));
-        assert_eq!(
-            input.next_state().await.unwrap_err().0,
-            "DEVICE_DISCONNECTED"
-        );
-    }
-}
+mod tests;

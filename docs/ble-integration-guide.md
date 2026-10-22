@@ -145,7 +145,7 @@ BLE 连接。不同 discovery 路径的进程锁不能阻止两个实例争抢�
 没有事务 ID、长度字段或 CRC。`00` 状态回复是例外，opcode 后直接跟电量，
 不能把电量误当 status。扩展查询通常在 status 后继续带数据。
 
-Rust 当前以 service=`7340`、characteristic=`7344`、帧首尾有效为入口条件：
+Rust 当前先筛选 service=`7340`、characteristic=`7344`，再重组完整帧并按以下规则处理：
 
 - opcode=`00`：必须通过状态解析才完成状态查询。
 - 其他请求：opcode 匹配、status=`00` 后交给具体协议解码器校验长度、地址和字段。
@@ -157,14 +157,19 @@ Rust 当前以 service=`7340`、characteristic=`7344`、帧首尾有效为入口
 
 ### MTU、分片与帧边界
 
-固件特征缓冲区的 200 字节不等于一次可通知 200 字节。当前
-`peripheralChar4Notify` 对超过 `peripheralMTU - 3` 的通知直接返回，不自动分片。
-默认 MTU=23 时通知载荷为 20 字节；例如 27 字节的 `9C` 回复需要足够大的协商 MTU。
+当前 `Fireware-harness` 固件的 `peripheralChar4Notify()` 会按 `peripheralMTU - 3` 顺序发送多个通知。
+默认 MTU=23 时，每个通知最多 20 字节；catalog 和最长 64 字节的按键回复会跨多个通知。
 
-当前 Rust 没有应用层通知重组，假设一次通知就是一帧；也没有自行实现命令分片。
-长宏、描述或其他大报文需专门验证平台长写入和实际 MTU，不能用短状态查询成功代替。
-固件命令接收器按 `CC DD` 查找结尾，未定义转义；payload 内出现相同连续字节也需
-专门验证，不能假定任意二进制内容安全。
+Runtime 在每个 BLE 会话内拼接 `7344` 通知；帧头、帧尾可以跨通知，也可连续处理多帧。
+`87` 按动作和描述长度确定边界，`88` 按查询类型确定长度，`97` 按各档位动作长度确定边界，
+因此二进制内容中的 `AA BB` / `CC DD` 不会被误判为帧边界。catalog 文本和状态/ACK 按帧尾识别。
+取消等待保留当前片段；断线或解析错误清空缓存。未完成帧最多 255 字节，对应固件回复长度字段上限。
+
+`ble.rx` 记录各个原始通知，`ble.frame` 记录拼接后的完整帧。小 MTU 真机联调应核对 catalog、
+长按键读回以及重连后的 `configuration.get`，同时确认模式推送和命令 ACK 正常。
+
+本次仅处理回复重组；命令发送仍使用平台的 GATT `WithResponse` 写入。
+长宏、描述和图片分块的发送仍需验证平台长写入和实际 MTU。
 
 ## 5. 已接入命令及参数
 
@@ -378,7 +383,7 @@ cargo run --locked --example runtime-keymap -- --device-id 'x1-REPLACE_WITH_ID' 
 
 默认不写入；`--apply` 才会保存。当前 Voice Key 固定 F18 的限制仍然适用。
 
-核心日志：`ble.tx`→`ble.rx`→`ble.exchange`→`device.state` 或 `operation.changed`。
+核心日志：`ble.tx`→`ble.rx`→`ble.frame`→`ble.exchange`→`device.state` 或 `operation.changed`。
 日志的数字字段 opcode 是十进制，`frame.hex` 才是十六进制。未知通知、无效帧也会
 留在 `ble.rx`，不等于 Runtime 支持其业务含义。详见 [debug-mode.md](debug-mode.md)。
 
@@ -389,7 +394,7 @@ cargo run --locked --example runtime-keymap -- --device-id 'x1-REPLACE_WITH_ID' 
 | 扫不到设备 | 蓝牙授权、广告中的7340服务、名称前缀、是否选错deviceId |
 | IPC已连上但无设备 | IPC服务和BLE发现独立；看 `ble.discovery/notFound` |
 | 有GATT写成功但4秒超时 | 7344是否订阅、响应opcode/首尾、长度、MTU；看exchange.phase |
-| 大查询超时但00正常 | 固件是否因超过MTU-3丢弃通知；当前没有通知分片重组 |
+| 大查询超时但00正常 | 对照 ble.rx 各分片与 ble.frame 完整帧，检查是否缺片、长度不符或固件未回复 |
 | 模式/拨杆不更新 | 是否真的发00/9B、9B是否9字节、mode/source是否合法 |
 | 非零ACK变成DEVICE_REJECTED | 从ble.rx读取原始status，不能只看统一Runtime错误码 |
 | configuration仍为null | 检查readStatus、不可表示的动作/描述及亮度范围；完整可读数据会自动建立基线 |
