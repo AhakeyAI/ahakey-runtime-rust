@@ -642,7 +642,7 @@ HTTP 403、超出连接数、消息过大、认证超时、发送超时或事件
 
 应用自己的 RPC 超时只表示“未收到响应”，不是取消操作。应将短时 RPC 等待与较长的写入进度等待分开；退出应用也不会取消已经受理的硬件写入。
 
-新固件的动作、描述、亮度和灯效在连接时自动读回；完整可表示的读回可建立 configuration 基线。`configuration.read` 提供显式完整读回；配置事务支持按字段暂停与读回后继续。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、通用按键注入、固件升级、硬件灯效状态触发、历史事件重放或通用操作取消接口。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
+新固件的动作、描述、亮度和灯效在连接时自动读回；完整可表示的读回可建立 configuration 基线。`configuration.read` 提供显式完整读回；配置事务支持按字段暂停与读回后继续。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、通用按键注入、固件升级、硬件灯效状态触发、历史事件重放或通用操作取消接口。语音输入与 AI 工具联动见下文扩展。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
 
 [JSON Schema](../contracts/runtime-v1/schema.json) 和初版 fixtures 保留原 Studio 契约，并新增 Runtime 所有的 `ConfigurationPatch` 定义及独立样例；**未完整收录 `keymap.apply`、输入监听及 readback 扩展**。接入现有版本时将本参考与对应扩展文档一起使用。当前硬件开发以 macOS 为主，Windows/Linux 真机行为尚未验收。
 
@@ -789,3 +789,8 @@ process.once('SIGINT', () => ws.close());
 ### configuration.patch（字段级写入）
 
 新增可选方法，客户端通过 hello.methods 检查支持后调用。请求和证据边界见 [字段级接口](configuration-patch-api.md)。支持亮度和指定键的描述，不重写键位、宏或灯效。
+
+
+## 语音与 AI 编程联动扩展
+
+新增 `voice.get/configure/control` 与 `hooks.get/configure/event/poll/decide/select`。快照可包含 `voice`、`hooks`，通过 `voice.changed`、`hooks.changed` 推送完整状态。具体参数、原生组件构建、工具接入与验收边界见 [语音与 Hook 集成](voice-and-hooks.md)。
