@@ -37,6 +37,7 @@ pub(super) struct Entry {
 }
 pub(super) struct State {
     pub(super) input: crate::input::InputState,
+    pub(super) voice: crate::voice::Controller,
     pub(super) devices: BTreeMap<String, Entry>,
     pub(super) journal: Journal,
     pub(super) sequence: u64,
@@ -85,7 +86,7 @@ impl Runtime {
         let snapshot = json!({"instanceId": self.instance_id, "sequence": state.sequence.to_string(),
             "devices": state.devices.values().map(|e| &e.device).collect::<Vec<_>>(),
             "operations": state.journal.operations.values().map(|r| &r.operation).collect::<Vec<_>>(),
-            "input": state.input});
+            "input": state.input, "voice": state.voice.view});
         (snapshot, receiver)
     }
     pub async fn input_message(&self, message: crate::input::InputMessage) {
@@ -101,10 +102,28 @@ impl Runtime {
                 }
                 state.input = input.clone();
                 state.emit("input.changed", json!(input));
+                if state.voice.view.preferences.enabled
+                    && (input.status != "listening"
+                        || !input.devices.iter().any(|device| {
+                            Some(&device.input_device_id)
+                                == state.voice.view.preferences.input_device_id.as_ref()
+                        }))
+                {
+                    let _ = state.voice.cancel();
+                    state.voice.view.preferences.enabled = false;
+                    state.voice.view.preferences.input_device_id = None;
+                    state.voice.view.error = Some("VOICE_INPUT_LOST".into());
+                    let view = json!(state.voice.view);
+                    state.emit("voice.changed", view);
+                }
             }
             InputMessage::Key(event) => {
                 if state.input.apply_key(&event) {
                     state.emit("input.key", json!(event));
+                    if state.voice.key(&event) {
+                        let view = json!(state.voice.view);
+                        state.emit("voice.changed", view);
+                    }
                 }
             }
         }

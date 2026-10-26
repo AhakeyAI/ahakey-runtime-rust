@@ -75,6 +75,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             initialize,
         )))
     };
+    let voice_helper = std::env::current_exe()?
+        .with_file_name("AhaKey Speech.app")
+        .join("Contents/MacOS/ahakey-speech");
+    let voice_task = if cfg!(target_os = "macos") && !mock && voice_helper.is_file() {
+        Some(tokio::spawn(ahakey_runtime_rust::voice::native::run(
+            runtime.clone(),
+            voice_helper,
+        )))
+    } else {
+        None
+    };
     let input_task = if input_monitor && !mock {
         let helper = std::env::current_exe()?.with_file_name("ahakey-input-monitor");
         Some(tokio::spawn(ahakey_runtime_rust::input::monitor(
@@ -93,6 +104,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     serving.abort();
     let _ = serving.await;
     discovery.unpublish();
+    if let Some(task) = voice_task {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(task) = input_task {
         task.abort();
         let _ = task.await;

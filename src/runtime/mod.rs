@@ -6,6 +6,7 @@ mod oled;
 mod operations;
 mod readback;
 mod state;
+mod voice;
 mod worker;
 use crate::{
     ahakey::device::AhaKey,
@@ -27,10 +28,22 @@ pub struct Runtime {
     storage: Storage,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub resources: crate::oled::Resources,
+    voice_preferences_path: std::path::PathBuf,
 }
 impl Runtime {
     pub async fn open(path: std::path::PathBuf) -> Result<Arc<Self>> {
         let resources = crate::oled::Resources::new(path.with_extension("resources"))?;
+        let voice_preferences_path = path.with_extension("voice.json");
+        let mut voice_preferences: crate::voice::Preferences =
+            match std::fs::read(&voice_preferences_path) {
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|_| Error("INVALID_VOICE_PREFERENCES"))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+                Err(_) => return Err(Error("STORAGE_ERROR")),
+            };
+        voice_preferences.validate()?;
+        voice_preferences.enabled = false;
+        voice_preferences.input_device_id = None;
         let (storage, journal) = Storage::open(path).await?;
         let (events, _) = broadcast::channel(256);
         Ok(Arc::new(Self {
@@ -38,6 +51,7 @@ impl Runtime {
             storage,
             state: Mutex::new(State {
                 input: crate::input::InputState::default(),
+                voice: crate::voice::Controller::new(voice_preferences),
                 devices: BTreeMap::new(),
                 journal,
                 sequence: 0,
@@ -47,6 +61,7 @@ impl Runtime {
             }),
             workers: Mutex::new(vec![]),
             resources,
+            voice_preferences_path,
         }))
     }
     pub async fn register(
@@ -97,6 +112,7 @@ impl Runtime {
         let senders = {
             let mut state = self.state.lock().await;
             state.stopping = true;
+            let _ = state.voice.cancel();
             for entry in state.devices.values() {
                 if let Some((_, pause)) = &entry.upload_pause {
                     pause.send_replace(true);

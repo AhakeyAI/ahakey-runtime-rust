@@ -13,4 +13,5 @@ pub mod oled;
 pub mod protocol;
 pub mod runtime;
 pub mod storage;
+pub mod voice;
 pub mod wire;

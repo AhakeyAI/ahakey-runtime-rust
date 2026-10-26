@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>ai.ahakey.runtime.speech</string>
+<key>CFBundleName</key><string>AhaKey Speech</string>
+<key>CFBundleExecutable</key><string>ahakey-speech</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>LSUIElement</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>按下 AhaKey 语音键时使用麦克风录音，松开后结束。</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>将你录制的语音转换为文字。未选择仅本机识别时，Apple 可能联网处理音频。</string>
+</dict></plist>

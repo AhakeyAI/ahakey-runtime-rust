@@ -2,6 +2,9 @@ use crate::configuration::{Configuration, ConfigurationReadback};
 use serde::{Deserialize, Serialize};
 
 pub const METHODS: &[&str] = &[
+    "voice.get",
+    "voice.configure",
+    "voice.control",
     "runtime.subscribe",
     "configuration.get",
     "configuration.read",

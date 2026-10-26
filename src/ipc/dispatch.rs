@@ -7,6 +7,22 @@ use crate::{
 use serde_json::{Value, json};
 pub(super) async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> Result<Value> {
     match method {
+        "voice.get" => Ok(json!(runtime.voice().await)),
+        "voice.configure" => Ok(json!(runtime.configure_voice(decode(params)?).await?)),
+        "voice.control" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Control {
+                action: String,
+                session_id: Option<String>,
+            }
+            let control: Control = decode(params)?;
+            Ok(json!(
+                runtime
+                    .control_voice(&control.action, control.session_id.as_deref())
+                    .await?
+            ))
+        }
         "configuration.read" => {
             let params: DeviceParams = decode(params)?;
             Ok(json!(runtime.read_configuration(&params.device_id).await?))
