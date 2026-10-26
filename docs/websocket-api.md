@@ -2,7 +2,7 @@
 
 适用于通过本机 Runtime 开发桌面应用、CLI 或桌面 WebView 应用的开发者。当前协议为 **1.0**，Runtime 包版本为 **0.1.0**。应用通过 WebSocket 管理连接、订阅状态、写入配置及查询操作结果；BLE 连接与硬件命令由 Runtime 统一处理。
 
-本参考覆盖当前实现的全部 15 个 RPC 方法和 7 类状态事件，包括初版契约之后增加的 `keymap.apply`、输入监听和 [OLED 上传扩展](oled-api.md)。另有连接内文件传输确认通知。示例中的设备 ID、token、baseToken、instanceId 和 subscriptionId 均为占位值，实际值必须从当前连接取得。
+本参考覆盖当前实现的全部 17 个 RPC 方法和 7 类状态事件，包括初版契约之后增加的 `keymap.apply`、输入监听和 [OLED 上传扩展](oled-api.md)。另有连接内文件传输确认通知。示例中的设备 ID、token、baseToken、instanceId 和 subscriptionId 均为占位值，实际值必须从当前连接取得。
 
 ## 目录
 
@@ -116,15 +116,17 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
 | `runtime.subscribe` | `topics: ["state"]`, `cursor: null` | `subscriptionId`, `snapshot` | 快照及后续事件的原子订阅已建立 |
 | `device.connect` | `deviceId` | `{}` | 连接任务已入队 |
 | `device.disconnect` | `deviceId` | `{}` | 断开任务已入队 |
-| `configuration.get` | `deviceId` | 配置文档 | 返回 Runtime 当前已知基线 |
+| `configuration.get` | `deviceId` | 配置文档 | 返回 Runtime 当前已知基线与显式读取状态 |
+| `configuration.read` | `deviceId` | 读取状态 | 受理完整设备读回任务，立即返回 |
 | `configuration.apply` | 操作 ID、设备、基线、范围、配置 | `operationId`, `status` | 操作已受理或返回同 ID 的已有状态 |
+| `configuration.patch` | 操作 ID、设备、基线、指定亮度/描述 | `operationId`, `status` | 只提交明确指定的字段，见 [字段级接口](configuration-patch-api.md) |
 | `keymap.apply` | 操作 ID、设备、基线、模式、键列表 | `operationId`, `status` | 操作已受理或返回同 ID 的已有状态 |
 | `operation.get` | `operationId` | 完整 Operation | 返回该操作当前状态 |
 | `resource.begin` / `finish` / `abort` | 文件长度与哈希 / uploadId | 接收任务 / 本地资源 / `{}` | 详见 [OLED API](oled-api.md) |
 | `oled.get` / `upload` | deviceId / 资源及目标 | 元数据 / 操作 ID | 详见 [OLED API](oled-api.md) |
-| `operation.pause` / `resume` | operationId | 完整 Operation | OLED 专用暂停与显式继续 |
+| `operation.pause` / `resume` | operationId | 完整 Operation | OLED 与配置事务暂停、核验后继续 |
 
-除了 `runtime.hello`，所有方法都要求先完成认证。当前 hello 返回的 `methods` 列表包含另外 14 个方法，**不包含 `runtime.hello` 自身**。
+除了 `runtime.hello`，所有方法都要求先完成认证。当前 hello 返回的 `methods` 列表包含另外 16 个方法，**不包含 `runtime.hello` 自身**。
 
 ## 认证与订阅
 
@@ -154,7 +156,7 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
     "instanceId": "RUNTIME_INSTANCE_ID",
     "runtimeVersion": "0.1.0",
     "methods": [
-      "runtime.subscribe", "configuration.get", "configuration.apply", "keymap.apply",
+      "runtime.subscribe", "configuration.get", "configuration.read", "configuration.apply", "configuration.patch", "keymap.apply",
       "operation.get", "device.connect", "device.disconnect"
     ]
   }
@@ -231,7 +233,7 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
 
 ### configuration.get
 
-请求及返回形状见[消息约定](#消息约定)。它返回 `deviceId`、不透明字符串 `baseToken` 和 `configuration`。设备断开时仍可能返回文档；写入则要求设备 `ready`。设备已有配置或 readback 且 worker 正忙时，读取可能返回 `BUSY`。
+请求及返回形状见[消息约定](#消息约定)。它返回 `deviceId`、不透明字符串 `baseToken` 和 `configuration`。设备断开时仍可能返回文档；写入则要求设备 `ready`。设备已有配置或 readback 且 worker 正忙时，读取可能返回 `BUSY`；显式设备读取期间允许查询读取状态。
 
 此方法**不会读取键盘 Flash**。真实设备初连、Runtime 重启、设备断连或观测到外部亮度变化后，完整配置可能为 `null`。`null` 表示完整配置未知，界面应禁用完整配置保存，避免将本地默认值误当作设备内容。
 
@@ -240,6 +242,16 @@ Runtime 以 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-h
 `readback` 与完整 `configuration` 分开：所有现有可写字段完整可读且可表示时，自动建立完整 `configuration`。不能表达的动作或非 ASCII 描述为 `null`，原始字节保留。固件没有配置 revision，Runtime 使用连续采集结果比较，不用未知字段生成完整基线。
 
 `baseToken` 用于防止旧会话或并发修改覆盖当前状态。不要解析、递增或自行生成。成功写入和基线失效后 token 会改变。收到配置事件或写入终态后，应重新读取再开始下一次编辑/保存。
+
+### configuration.read
+
+发送 `{"deviceId":"x1-DEVICE_ID"}`，立即返回 `{"status":"reading","attempt":0,"maxAttempts":3,"errorCode":null}`。Runtime 在设备专属 worker 内重新执行完整读回；它不会把缓存或 journal 转成设备观察值，也不会发送配置写入命令。
+
+受理要求设备 ready 且未被其他任务占用，否则返回 `DEVICE_NOT_READY` / `BUSY`。受理后原基线失效，`configuration` 为 null，`readback` 缺省，新的 `baseToken` 使旧写入失效。此时允许 `configuration.get` 查询 `read` 字段；设备写入、OLED 查询及连接控制仍互斥。`configuration.invalidated` / `configuration.changed` 提示客户端重新取得文档。
+
+`read.status` 为 reading / completed / failed；`attempt` 为 0–3，`maxAttempts` 为 3。每次尝试包含设备读回和状态一致性检查；传输失败先断开，下次尝试重新连接。总共最多三次，每次最多 65 秒（包含必要的重新连接），间隔 300/600ms；不支持读回立即失败。成功时原子公布配置和新 token；失败时字段仍未知，`errorCode` 给出原因，用户可再次请求读取。
+
+读取不占用持久化写入 Operation ID。退出 Studio 不取消任务；重新进入后用 `configuration.get` 查询当前读取。Runtime 重启不恢复读取状态，按正常连接流程重新建立设备基线。响应丢失后先查询 `configuration.get`，不要自动重发 `configuration.read`。读取成功只证明设备当前可观察值，不证明 Flash 保存或断电保留。MockX1 未实现硬件读回，因此返回 failed / UNSUPPORTED_CONFIGURATION；它的默认缓存不能充当硬件证据。
 
 ### configuration.get 的 readback 扩展
 
@@ -392,7 +404,7 @@ readback 是连接期间读取到的设备内容。成功写入后清除旧 read
 
 ### 生命周期与完成条件
 
-正常生命周期为 `accepted → running → completed`，失败可从 accepted 或 running 进入 `failed`。协议终态还保留 `cancelled`，当前没有通用取消方法，也不会主动产生该状态。OLED 另有 `paused`，保留任务供显式继续，不是终态。客户端应将 `completed`、`failed`、`cancelled` 都视为终态。
+正常生命周期为 `accepted → running → completed`，失败可从 accepted 或 running 进入 `failed`。协议终态还保留 `cancelled`，当前没有通用取消方法，也不会主动产生该状态。OLED 和支持配置事务的任务另有 `paused`，保留任务供显式继续，不是终态。客户端应将 `completed`、`failed`、`cancelled` 都视为终态。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -404,7 +416,7 @@ readback 是连接期间读取到的设备内容。成功写入后清除旧 read
 | `effect: complete` | 全部命令满足当前型号的确认条件 |
 | `errorCode` | 正常为 `null`；失败时为业务错误码 |
 
-首次受理先持久化，再返回 `accepted` 并异步执行；应用断开不会取消操作。X1 的 `completed` 表示所有写入命令和最终保存收到成功 ACK，完整配置写入还验证亮度回读；不等于完成所有配置读回或证明断电持久性。操作不是硬件事务，中途失败可能已经部分生效，不会自动回滚或重发。
+首次受理先持久化，再返回 `accepted` 并异步执行；应用断开不会取消操作。X1 配置事务以 `configurationProgress` 区分字段 ACK、读回和保存确认。受理时有 readback 的任务完成前必须核验目标字段；旧固件可仅有 ACK 证据，不能证明断电持久性。详情见 [配置事务](configuration-transactions.md)。操作不是硬件事务，中途失败可能已经部分生效，不会自动回滚或重发。
 
 ### 幂等与断线恢复
 
@@ -419,7 +431,7 @@ readback 是连接期间读取到的设备内容。成功写入后清除旧 read
 3. 已存在则跟随该记录到终态。不存在时，确认连接的是同一个 Runtime 数据存储，再考虑以完全相同参数和相同 ID 重试。
 4. 如果重试返回 `BASE_CONFLICT`，重新读取配置并让用户核对后，作为新操作提交；不要静默改 token 覆盖。
 
-Runtime 使用同一 journal 重启后，未完成配置/改键恢复为 `failed` / `effect: unknown` / `errorCode: RUNTIME_RESTARTED`；未完成 OLED 恢复为 `paused` / unknown，已有暂停记录保留。不会自动重放。终态记录可继续查询；切换 discovery 路径、mock/真实模式或日志被维护重置后，不能假设旧 ID 仍存在。
+Runtime 使用同一 journal 重启后，带配置事务 checkpoint 的未完成任务与 OLED 恢复为 `paused` / unknown / RUNTIME_RESTARTED；旧配置/改键记录恢复为 `failed` / unknown / RUNTIME_RESTARTED，已有暂停记录保留。不会自动重放。终态记录可继续查询；切换 discovery 路径、mock/真实模式或日志被维护重置后，不能假设旧 ID 仍存在。
 
 ## 事件参考
 
@@ -630,9 +642,9 @@ HTTP 403、超出连接数、消息过大、认证超时、发送超时或事件
 
 应用自己的 RPC 超时只表示“未收到响应”，不是取消操作。应将短时 RPC 等待与较长的写入进度等待分开；退出应用也不会取消已经受理的硬件写入。
 
-新固件的动作、描述、亮度和灯效在连接时自动读回；完整可表示的读回可建立 configuration 基线。没有单独的配置主动刷新 RPC。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、按键注入、语音、固件升级、Hook 状态触发、历史事件重放或通用操作取消接口。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
+新固件的动作、描述、亮度和灯效在连接时自动读回；完整可表示的读回可建立 configuration 基线。`configuration.read` 提供显式完整读回；配置事务支持按字段暂停与读回后继续。OLED 有独立的主动查询、上传和暂停/继续接口，见 [OLED API](oled-api.md)，包括二进制块、文件传输通知及新增错误。当前不提供临时插件接管、通用按键注入、固件升级、硬件灯效状态触发、历史事件重放或通用操作取消接口。不要把固件命令文档中的能力当作已经开放的 WebSocket API。
 
-初版 [JSON Schema](../contracts/runtime-v1/schema.json) 和 fixtures 保持原 Studio 契约，**未完整收录 `keymap.apply`、输入监听及 readback 扩展**。接入现有版本时将本参考与对应扩展文档一起使用。当前硬件开发以 macOS 为主，Windows/Linux 真机行为尚未验收。
+[JSON Schema](../contracts/runtime-v1/schema.json) 和初版 fixtures 保留原 Studio 契约，并新增 Runtime 所有的 `ConfigurationPatch` 定义及独立样例；**未完整收录 `keymap.apply`、输入监听及 readback 扩展**。接入现有版本时将本参考与对应扩展文档一起使用。当前硬件开发以 macOS 为主，Windows/Linux 真机行为尚未验收。
 
 ## 可运行的只读客户端
 
@@ -773,3 +785,7 @@ process.once('SIGINT', () => ws.close());
 - [固件联调手册](ble-integration-guide.md)、[调试日志](debug-mode.md)。
 
 文档核对日期：2026 年 10 月 19 日。接口变化时应同步更新本参考；旧版固定 fixtures 不代表新增接口的完整清单。
+
+### configuration.patch（字段级写入）
+
+新增可选方法，客户端通过 hello.methods 检查支持后调用。请求和证据边界见 [字段级接口](configuration-patch-api.md)。支持亮度和指定键的描述，不重写键位、宏或灯效。

@@ -20,11 +20,24 @@ pub trait Hardware: Send {
     }
     /// Encoding belongs to the concrete model, never to the IPC or runtime scheduler.
     fn configuration_commands(&self, configuration: &Configuration) -> Result<Vec<Vec<u8>>>;
+    fn patch_commands(
+        &self,
+        _request: &crate::configuration::patch::ConfigurationPatch,
+    ) -> Result<Vec<Vec<u8>>> {
+        Err(crate::error::Error("UNSUPPORTED_CAPABILITY"))
+    }
     fn keymap_commands(
         &self,
         _request: &crate::configuration::keymap::KeymapApply,
     ) -> Result<Vec<Vec<u8>>> {
         Err(crate::error::Error("UNSUPPORTED_CAPABILITY"))
+    }
+    /// Opt-in logical-field boundaries; unsupported models keep their existing atomic command path.
+    fn configuration_plan(
+        &self,
+        _request: &crate::operation::Mutation,
+    ) -> Result<Option<crate::configuration::transaction::Plan>> {
+        Ok(None)
     }
     async fn connect(&mut self) -> Result<HardwareState>;
     async fn disconnect(&mut self) -> Result<()>;

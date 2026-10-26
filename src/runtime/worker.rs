@@ -63,11 +63,25 @@ impl Runtime {
                         self.state.lock().await.devices[&id].device.connection_state == "ready";
                     continue;
                 }
+                Some(Job::ResumeConfiguration(request)) => {
+                    self.execute_configuration_transaction(hardware.as_mut(), &request, true)
+                        .await;
+                    connected =
+                        self.state.lock().await.devices[&id].device.connection_state == "ready";
+                    continue;
+                }
                 Some(Job::ResumeOled(request)) => {
                     self.execute_oled(hardware.as_mut(), &request, true).await;
                     recover_oled = self.state.lock().await.journal.operations
                         [&request.operation_id]
                         .needs_oled_recovery();
+                    connected =
+                        self.state.lock().await.devices[&id].device.connection_state == "ready";
+                    continue;
+                }
+                Some(Job::ReadConfiguration) => {
+                    self.execute_read_configuration(&id, hardware.as_mut())
+                        .await;
                     connected =
                         self.state.lock().await.devices[&id].device.connection_state == "ready";
                     continue;

@@ -140,6 +140,9 @@
               "type": "null"
             }
           ]
+        },
+        "configurationProgress": {
+          "$ref": "#/$defs/ConfigurationProgress"
         }
       },
       "required": [
@@ -475,6 +478,9 @@
               "type": "null"
             }
           ]
+        },
+        "read": {
+          "$ref": "#/$defs/ConfigurationRead"
         }
       },
       "required": [
@@ -531,6 +537,163 @@
         "changes"
       ],
       "additionalProperties": false
+    },
+    "ConfigurationPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "baseToken": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "brightnessPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "descriptions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 20,
+                "pattern": "^[\\u0000-\\u007F]*$"
+              }
+            },
+            "required": [
+              "mode",
+              "index",
+              "description"
+            ]
+          }
+        }
+      },
+      "required": [
+        "operationId",
+        "deviceId",
+        "baseToken"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "brightnessPercent"
+          ],
+          "properties": {
+            "brightnessPercent": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "required": [
+            "descriptions"
+          ],
+          "properties": {
+            "descriptions": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    },
+    "ConfigurationRead": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "reading",
+            "completed",
+            "failed"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "maxAttempts": {
+          "const": 3
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "attempt",
+        "maxAttempts",
+        "errorCode"
+      ],
+      "additionalProperties": true
+    },
+    "ConfigurationProgress": {
+      "type": "object",
+      "properties": {
+        "fieldsTotal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 37
+        },
+        "fieldsAcknowledged": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 37
+        },
+        "fieldsVerified": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 37
+        },
+        "phase": {
+          "type": "string"
+        },
+        "saveAcknowledged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fieldsTotal",
+        "fieldsAcknowledged",
+        "fieldsVerified",
+        "phase",
+        "saveAcknowledged"
+      ],
+      "additionalProperties": true
     }
   }
 }

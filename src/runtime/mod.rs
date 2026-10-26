@@ -1,8 +1,10 @@
 //! Runtime ownership, startup, registration and shutdown.
 mod configuration;
+mod configuration_transaction;
 mod device;
 mod oled;
 mod operations;
+mod readback;
 mod state;
 mod worker;
 use crate::{
@@ -72,6 +74,7 @@ impl Runtime {
                     base_token: Uuid::new_v4().to_string(),
                     configuration: None,
                     readback: None,
+                    read: None,
                 },
                 sender,
                 busy: false,

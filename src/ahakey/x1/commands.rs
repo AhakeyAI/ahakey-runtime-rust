@@ -98,3 +98,120 @@ pub fn keymap_commands(
     commands.push(frame(0x04, &[]));
     Ok(commands)
 }
+
+pub fn patch_commands(
+    request: &crate::configuration::patch::ConfigurationPatch,
+) -> Result<Vec<Vec<u8>>> {
+    request.validate()?;
+    let mut commands = Vec::new();
+    if let Some(brightness) = request.brightness_percent {
+        commands.push(frame(0x85, &[brightness]));
+    }
+    for field in &request.descriptions {
+        commands.push(key_frame(
+            0x75,
+            field.mode,
+            field.index,
+            field.description.as_bytes(),
+        ));
+    }
+    commands.push(frame(0x04, &[]));
+    Ok(commands)
+}
+
+/// A key action's clear/set frames are indivisible with respect to user pause.
+pub fn transaction_plan(
+    request: &crate::operation::Mutation,
+) -> Result<crate::configuration::transaction::Plan> {
+    use crate::{
+        configuration::transaction::{Field, Group, Plan, lights_value},
+        operation::Mutation,
+    };
+    use serde_json::json;
+    request.validate()?;
+    let mut groups = Vec::new();
+    let mut brightness = |value| {
+        groups.push(Group {
+            field: Field::Brightness,
+            desired: json!(value),
+            commands: vec![frame(0x85, &[value])],
+        })
+    };
+    match request {
+        Mutation::Patch(patch) => {
+            if let Some(value) = patch.brightness_percent {
+                brightness(value);
+            }
+            for field in &patch.descriptions {
+                groups.push(Group {
+                    field: Field::Description(field.mode, field.index),
+                    desired: json!(field.description),
+                    commands: vec![key_frame(
+                        0x75,
+                        field.mode,
+                        field.index,
+                        field.description.as_bytes(),
+                    )],
+                });
+            }
+        }
+        Mutation::Keymap(keys) => {
+            for key in &keys.keys {
+                groups.push(Group {
+                    field: Field::Action(keys.mode, key.index),
+                    desired: json!(key.action),
+                    commands: action_commands(keys.mode, key.index, &key.action),
+                });
+            }
+        }
+        Mutation::Configuration(config) => {
+            brightness(config.changes.device.brightness_percent);
+            for mode in &config.changes.modes {
+                for key in &mode.keys {
+                    let index = ROLES.iter().position(|r| *r == key.role).unwrap() as u8;
+                    groups.push(Group {
+                        field: Field::Action(mode.mode, index),
+                        desired: json!(key.action),
+                        commands: action_commands(mode.mode, index, &key.action),
+                    });
+                    groups.push(Group {
+                        field: Field::Description(mode.mode, index),
+                        desired: json!(key.description),
+                        commands: vec![key_frame(
+                            0x75,
+                            mode.mode,
+                            index,
+                            key.description.as_bytes(),
+                        )],
+                    });
+                }
+                let mut effects = vec![mode.mode];
+                for state in STATES {
+                    effects.push(
+                        EFFECTS
+                            .iter()
+                            .position(|e| {
+                                *e == mode
+                                    .lights
+                                    .iter()
+                                    .find(|l| l.state == state)
+                                    .unwrap()
+                                    .effect
+                            })
+                            .unwrap() as u8,
+                    );
+                }
+                groups.push(Group {
+                    field: Field::Lights(mode.mode),
+                    desired: lights_value(&mode.lights),
+                    commands: vec![frame(0x84, &effects)],
+                });
+            }
+        }
+        Mutation::Oled(_) => return Err(crate::error::Error("UNSUPPORTED_CAPABILITY")),
+    }
+    Ok(Plan {
+        groups,
+        save: frame(0x04, &[]),
+    })
+}

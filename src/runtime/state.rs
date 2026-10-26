@@ -20,7 +20,9 @@ pub(super) enum Job {
     Connect,
     Disconnect,
     Apply(Mutation),
+    ReadConfiguration,
     ReadOled(oneshot::Sender<Result<crate::oled::State>>),
+    ResumeConfiguration(Mutation),
     ResumeOled(crate::oled::Upload),
     Shutdown,
 }
@@ -59,6 +61,14 @@ impl State {
     }
     pub(super) fn invalidate(&mut self, id: &str) {
         if let Some(entry) = self.devices.get_mut(id) {
+            if entry
+                .document
+                .read
+                .as_ref()
+                .is_some_and(|read| read.status == "completed")
+            {
+                entry.document.read = None;
+            }
             entry.document.configuration = None;
             entry.document.readback = None;
             entry.document.base_token = Uuid::new_v4().to_string();

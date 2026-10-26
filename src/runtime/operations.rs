@@ -26,7 +26,9 @@ impl Runtime {
             .operations
             .get(id)
             .ok_or(Error("OPERATION_NOT_FOUND"))?;
-        if !matches!(record.request, Mutation::Oled(_)) {
+        if !matches!(record.request, Mutation::Oled(_))
+            && record.configuration_transaction.is_none()
+        {
             return Err(Error("UNSUPPORTED_CAPABILITY"));
         }
         if record.operation.status == "paused" || record.operation.terminal() {
@@ -47,9 +49,12 @@ impl Runtime {
             .operations
             .get(id)
             .ok_or(Error("OPERATION_NOT_FOUND"))?;
-        let Mutation::Oled(request) = &record.request else {
+        if !matches!(record.request, Mutation::Oled(_))
+            && record.configuration_transaction.is_none()
+        {
             return Err(Error("UNSUPPORTED_CAPABILITY"));
-        };
+        }
+        let request = &record.request;
         if record.operation.status != "paused" {
             if matches!(
                 record.operation.status.as_str(),
@@ -68,7 +73,7 @@ impl Runtime {
         }
         let entry = state
             .devices
-            .get_mut(&request.device_id)
+            .get_mut(request.device_id())
             .ok_or(Error("DEVICE_NOT_FOUND"))?;
         if entry.device.connection_state != "ready" {
             return Err(Error("DEVICE_NOT_READY"));
@@ -86,7 +91,7 @@ impl Runtime {
         let operation = operation.clone();
         if self.storage.save(&state.journal).await.is_err() {
             state.storage_healthy = false;
-            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+            state.devices.get_mut(request.device_id()).unwrap().busy = false;
             state
                 .journal
                 .operations
@@ -96,8 +101,14 @@ impl Runtime {
                 .status = "paused".into();
             return Err(Error("STORAGE_ERROR"));
         }
-        if sender.try_send(Job::ResumeOled(request.clone())).is_err() {
-            state.devices.get_mut(&request.device_id).unwrap().busy = false;
+        if sender
+            .try_send(match request.clone() {
+                Mutation::Oled(upload) => Job::ResumeOled(upload),
+                request => Job::ResumeConfiguration(request),
+            })
+            .is_err()
+        {
+            state.devices.get_mut(request.device_id()).unwrap().busy = false;
             state
                 .journal
                 .operations
@@ -161,7 +172,7 @@ impl Runtime {
             }
         }
         let sender = entry.sender.clone();
-        if matches!(request, Mutation::Oled(_)) {
+        {
             let (signal, _) = watch::channel(false);
             entry.upload_pause = Some((request.operation_id().to_owned(), signal));
         }
@@ -173,6 +184,7 @@ impl Runtime {
             progress: 0.0,
             effect: "none".into(),
             error_code: None,
+            configuration_progress: None,
         };
         state.journal.operations.insert(
             request.operation_id().to_owned(),
@@ -180,6 +192,7 @@ impl Runtime {
                 request: request.clone(),
                 operation: operation.clone(),
                 oled_transaction: false,
+                configuration_transaction: None,
             },
         );
         if self.storage.save(&state.journal).await.is_err() {

@@ -129,3 +129,7 @@ python3 scripts/check-studio-client.py --studio '../AhaKey Studio'
 `keymap.apply` 可直接修改指定键位，不要求完整配置基线或亮度支持；复用设备 worker 和持久化操作。见 [改键 API 与 IPC 客户端](docs/keymap-api.md)。
 
 完整职责划分与文件定位见 [代码目录说明](docs/code-layout.md)。
+
+`configuration.patch` 支持独立修改亮度与指定键描述，不要求完整配置基线，不重写键位或灯效。见 [字段级接口与验证范围](docs/configuration-patch-api.md)。
+
+X1 配置任务支持按完整字段暂停、持久化恢复与核验后续写，见 [配置事务](docs/configuration-transactions.md)。

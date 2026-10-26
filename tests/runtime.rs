@@ -32,6 +32,8 @@ mod events;
 mod keymap;
 #[path = "runtime/oled.rs"]
 mod oled;
+#[path = "runtime/patch.rs"]
+mod patch;
 #[path = "runtime/storage.rs"]
 mod storage;
 #[path = "runtime/ipc.rs"]

@@ -14,6 +14,8 @@ pub struct Record {
     /// Persisted before an OLED write can start; controls post-crash recovery checks.
     #[serde(default, skip_serializing_if = "is_false")]
     pub oled_transaction: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_transaction: Option<crate::configuration::transaction::Checkpoint>,
 }
 fn is_false(value: &bool) -> bool {
     !*value
@@ -65,7 +67,9 @@ impl Storage {
                 if record.operation.status == "paused" {
                     continue;
                 }
-                record.operation.status = if matches!(record.request, Mutation::Oled(_)) {
+                record.operation.status = if matches!(record.request, Mutation::Oled(_))
+                    || record.configuration_transaction.is_some()
+                {
                     "paused"
                 } else {
                     "failed"
@@ -73,6 +77,10 @@ impl Storage {
                 .into();
                 record.operation.effect = "unknown".into();
                 record.operation.error_code = Some("RUNTIME_RESTARTED".into());
+                if let Some(progress) = &mut record.operation.configuration_progress {
+                    progress.phase = "paused".into();
+                    progress.fields_verified = 0;
+                }
             }
         }
         let store = Self { path };

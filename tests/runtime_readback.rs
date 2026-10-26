@@ -18,6 +18,8 @@ struct ReadableDevice {
     config: Arc<Mutex<Configuration>>,
     writes: Arc<AtomicUsize>,
     gate: Arc<Semaphore>,
+    reads: Arc<AtomicUsize>,
+    failures: Arc<Mutex<std::collections::VecDeque<&'static str>>>,
 }
 #[async_trait]
 impl Hardware for ReadableDevice {
@@ -44,6 +46,10 @@ impl Hardware for ReadableDevice {
     }
     async fn read_configuration(&mut self) -> Result<Option<ConfigurationReadback>> {
         let _permit = self.gate.acquire().await.unwrap();
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(code) = self.failures.lock().unwrap().pop_front() {
+            return Err(ahakey_runtime_rust::error::Error(code));
+        }
         let config = self.config.lock().unwrap().clone();
         Ok(Some(ConfigurationReadback {
             device: ReadbackDevice {
@@ -83,6 +89,8 @@ impl ReadableDevice {
             config: Arc::new(Mutex::new(Configuration::mock_defaults())),
             writes: Arc::new(AtomicUsize::new(0)),
             gate: Arc::new(Semaphore::new(0)),
+            reads: Arc::new(AtomicUsize::new(0)),
+            failures: Default::default(),
         }
     }
     fn clone_device(&self) -> AhaKey {
@@ -93,6 +101,8 @@ impl ReadableDevice {
                 config: self.config.clone(),
                 writes: self.writes.clone(),
                 gate: self.gate.clone(),
+                reads: self.reads.clone(),
+                failures: self.failures.clone(),
             }),
         }
     }
@@ -235,4 +245,131 @@ async fn readback_is_atomic_and_refreshes_after_reconnect_and_restart() {
     assert_eq!(restored.readback.unwrap().device.brightness_percent, 72);
     assert_ne!(restored.base_token, after_write.base_token);
     restarted.shutdown().await;
+}
+
+async fn read_finished(runtime: &Runtime) -> ahakey_runtime_rust::wire::ConfigurationDocument {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let document = runtime.configuration("readable-x1").await.unwrap();
+            if document
+                .read
+                .as_ref()
+                .is_some_and(|read| read.status != "reading")
+            {
+                break document;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn explicit_read_reserves_device_keeps_drafts_out_of_runtime_and_replaces_only_after_success()
+{
+    let directory = tempfile::tempdir().unwrap();
+    let device = ReadableDevice::new();
+    device.gate.add_permits(1);
+    let runtime = Runtime::open(directory.path().join("state.json"))
+        .await
+        .unwrap();
+    runtime
+        .register(device.clone_device(), None, false)
+        .await
+        .unwrap();
+    state(&runtime, "ready").await;
+    let initial = runtime.configuration("readable-x1").await.unwrap();
+    device.gate.forget_permits(1);
+    device.config.lock().unwrap().device.brightness_percent = 63;
+    let accepted = runtime.read_configuration("readable-x1").await.unwrap();
+    assert_eq!(accepted.status, "reading");
+    let reading = runtime.configuration("readable-x1").await.unwrap();
+    assert!(reading.readback.is_none());
+    assert!(reading.configuration.is_none());
+    assert_ne!(reading.base_token, initial.base_token);
+    assert_eq!(
+        runtime
+            .read_configuration("readable-x1")
+            .await
+            .unwrap_err()
+            .0,
+        "BUSY"
+    );
+    assert_eq!(
+        runtime.connect("readable-x1", false).await.unwrap_err().0,
+        "BUSY"
+    );
+    assert_eq!(
+        runtime
+            .apply_keymap(KeymapApply {
+                operation_id: "during-explicit-read".into(),
+                device_id: "readable-x1".into(),
+                base_token: reading.base_token,
+                mode: 0,
+                keys: vec![KeyBinding {
+                    index: 0,
+                    action: Action::Disabled {}
+                }],
+            })
+            .await
+            .unwrap_err()
+            .0,
+        "BUSY"
+    );
+    device.gate.add_permits(1);
+    let complete = read_finished(&runtime).await;
+    assert_eq!(complete.read.as_ref().unwrap().status, "completed");
+    assert_eq!(complete.read.as_ref().unwrap().attempt, 1);
+    assert_eq!(complete.readback.unwrap().device.brightness_percent, 63);
+    assert!(
+        complete.configuration.is_none(),
+        "unknown descriptions cannot become a full baseline"
+    );
+    assert_eq!(device.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(device.writes.load(Ordering::SeqCst), 0);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_read_retries_at_most_three_and_keeps_failures_unknown() {
+    let directory = tempfile::tempdir().unwrap();
+    let device = ReadableDevice::new();
+    device.gate.add_permits(1);
+    let runtime = Runtime::open(directory.path().join("state.json"))
+        .await
+        .unwrap();
+    runtime
+        .register(device.clone_device(), None, false)
+        .await
+        .unwrap();
+    state(&runtime, "ready").await;
+    device
+        .failures
+        .lock()
+        .unwrap()
+        .extend(["CONFIGURATION_CHANGED"; 3]);
+    runtime.read_configuration("readable-x1").await.unwrap();
+    let failed = read_finished(&runtime).await;
+    assert_eq!(failed.read.as_ref().unwrap().status, "failed");
+    assert_eq!(failed.read.unwrap().attempt, 3);
+    assert!(failed.readback.is_none());
+    assert_eq!(device.reads.load(Ordering::SeqCst), 4);
+    // Explicit retry after failure; a transport error causes reconnection before another read.
+    device.failures.lock().unwrap().push_back("DEVICE_TIMEOUT");
+    runtime.read_configuration("readable-x1").await.unwrap();
+    let succeeded = read_finished(&runtime).await;
+    assert_eq!(succeeded.read.as_ref().unwrap().status, "completed");
+    assert_eq!(succeeded.read.unwrap().attempt, 2);
+    device
+        .failures
+        .lock()
+        .unwrap()
+        .push_back("UNSUPPORTED_CONFIGURATION");
+    runtime.read_configuration("readable-x1").await.unwrap();
+    let unsupported = read_finished(&runtime).await;
+    assert_eq!(unsupported.read.as_ref().unwrap().status, "failed");
+    assert_eq!(unsupported.read.unwrap().attempt, 1);
+    assert_eq!(device.writes.load(Ordering::SeqCst), 0);
+    runtime.shutdown().await;
 }

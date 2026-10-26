@@ -15,6 +15,12 @@ impl Hardware for KeyOnlyHardware {
     fn configuration_commands(&self, _: &Configuration) -> Result<Vec<Vec<u8>>> {
         Err(Error("UNSUPPORTED_CAPABILITY"))
     }
+    fn patch_commands(
+        &self,
+        request: &ahakey_runtime_rust::configuration::patch::ConfigurationPatch,
+    ) -> Result<Vec<Vec<u8>>> {
+        ahakey_runtime_rust::protocol::x1::patch_commands(request)
+    }
     fn keymap_commands(
         &self,
         request: &ahakey_runtime_rust::keymap::KeymapApply,

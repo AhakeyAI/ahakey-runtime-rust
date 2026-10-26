@@ -99,11 +99,23 @@ impl Hardware for MockX1 {
     ) -> Result<Vec<Vec<u8>>> {
         crate::ahakey::x1::commands::configuration_commands(configuration)
     }
+    fn patch_commands(
+        &self,
+        request: &crate::configuration::patch::ConfigurationPatch,
+    ) -> Result<Vec<Vec<u8>>> {
+        crate::ahakey::x1::commands::patch_commands(request)
+    }
     fn keymap_commands(
         &self,
         request: &crate::configuration::keymap::KeymapApply,
     ) -> Result<Vec<Vec<u8>>> {
         crate::ahakey::x1::commands::keymap_commands(request)
+    }
+    fn configuration_plan(
+        &self,
+        request: &crate::operation::Mutation,
+    ) -> Result<Option<crate::configuration::transaction::Plan>> {
+        crate::ahakey::x1::commands::transaction_plan(request).map(Some)
     }
     async fn connect(&mut self) -> Result<HardwareState> {
         self.connected = true;

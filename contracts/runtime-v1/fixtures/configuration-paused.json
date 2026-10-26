@@ -1,0 +1,15 @@
+{
+  "operationId": "configuration-pause-example",
+  "deviceId": "x1-example",
+  "status": "paused",
+  "progress": 0.3333333333333333,
+  "effect": "unknown",
+  "errorCode": "CONFIGURATION_PAUSED",
+  "configurationProgress": {
+    "fieldsTotal": 2,
+    "fieldsAcknowledged": 1,
+    "fieldsVerified": 0,
+    "phase": "paused",
+    "saveAcknowledged": false
+  }
+}

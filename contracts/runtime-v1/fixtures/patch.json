@@ -1,0 +1,13 @@
+{
+  "operationId": "patch-example",
+  "deviceId": "x1-example",
+  "baseToken": "base-example",
+  "brightnessPercent": 57,
+  "descriptions": [
+    {
+      "mode": 2,
+      "index": 1,
+      "description": "Approve"
+    }
+  ]
+}

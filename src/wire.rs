@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 pub const METHODS: &[&str] = &[
     "runtime.subscribe",
     "configuration.get",
+    "configuration.read",
     "configuration.apply",
+    "configuration.patch",
     "keymap.apply",
     "operation.get",
     "device.connect",
@@ -57,4 +59,16 @@ pub struct ConfigurationDocument {
     pub configuration: Option<Configuration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readback: Option<ConfigurationReadback>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<ConfigurationRead>,
+}
+
+/// Volatile read task: survives Studio disconnects, but never resumes across Runtime restart.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationRead {
+    pub status: String,
+    pub attempt: u8,
+    pub max_attempts: u8,
+    pub error_code: Option<String>,
 }

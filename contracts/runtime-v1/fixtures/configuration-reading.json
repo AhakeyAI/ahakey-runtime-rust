@@ -1,0 +1,11 @@
+{
+  "deviceId": "x1-example",
+  "baseToken": "reading-baseline",
+  "configuration": null,
+  "read": {
+    "status": "reading",
+    "attempt": 1,
+    "maxAttempts": 3,
+    "errorCode": null
+  }
+}

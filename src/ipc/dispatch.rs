@@ -7,6 +7,10 @@ use crate::{
 use serde_json::{Value, json};
 pub(super) async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> Result<Value> {
     match method {
+        "configuration.read" => {
+            let params: DeviceParams = decode(params)?;
+            Ok(json!(runtime.read_configuration(&params.device_id).await?))
+        }
         "configuration.get" => {
             let params: DeviceParams = decode(params)?;
             Ok(json!(runtime.configuration(&params.device_id).await?))
@@ -31,6 +35,10 @@ pub(super) async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> 
         "operation.get" => {
             let params: OperationParams = decode(params)?;
             Ok(json!(runtime.operation(&params.operation_id).await?))
+        }
+        "configuration.patch" => {
+            let operation = runtime.patch_configuration(decode(params)?).await?;
+            Ok(json!({"operationId":operation.operation_id,"status":operation.status}))
         }
         "keymap.apply" => {
             let operation = runtime.apply_keymap(decode(params)?).await?;

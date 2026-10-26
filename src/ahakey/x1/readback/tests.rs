@@ -416,6 +416,47 @@ async fn worker_and_authenticated_websocket_read_real_protocol_and_reconnect_wit
             if scenario == "timeout" { 2 } else { 1 }
         );
         if scenario == "complete" {
+            let before_read = runtime.configuration("readable-x1").await.unwrap();
+            responses
+                .lock()
+                .unwrap()
+                .get_mut(&frame(0x87, &[0, 0]))
+                .unwrap()[11] = b'8';
+            let mut method = "configuration.read";
+            for _ in 0..100 {
+                socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"explicit-read","method":method,"params":{"deviceId":"readable-x1"}}).to_string().into())).await.unwrap();
+                let Message::Text(text) =
+                    tokio::time::timeout(Duration::from_secs(5), socket.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap()
+                else {
+                    panic!("response");
+                };
+                let reply: Value = serde_json::from_str(&text).unwrap();
+                assert!(reply.get("error").is_none(), "{reply}");
+                if method == "configuration.read" {
+                    assert_eq!(reply["result"]["status"], "reading");
+                }
+                if reply["result"]["read"]["status"] == "completed" {
+                    break;
+                }
+                method = "configuration.get";
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let read = runtime.configuration("readable-x1").await.unwrap();
+            assert_eq!(read.read.as_ref().unwrap().status, "completed");
+            assert_eq!(
+                read.configuration.as_ref().unwrap().modes[0].keys[0].description,
+                "M8K0"
+            );
+            assert_ne!(before_read.base_token, read.base_token);
+            assert_eq!(
+                connects.load(Ordering::SeqCst),
+                1,
+                "explicit read does not reconnect a healthy device"
+            );
             let initial = runtime.configuration("readable-x1").await.unwrap();
             runtime.connect("readable-x1", false).await.unwrap();
             ready(&runtime, "disconnected").await;
