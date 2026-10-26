@@ -52,6 +52,19 @@ impl Runtime {
             };
             match job {
                 Some(Job::Shutdown) => break,
+                Some(Job::RefreshHardware(reply)) => {
+                    let result = hardware.refresh().await;
+                    if let Ok(status) = &result {
+                        self.publish_hardware(&id, status).await;
+                    } else {
+                        let _ = hardware.disconnect().await;
+                        connected = false;
+                        self.disconnected(&id).await;
+                    }
+                    self.state.lock().await.devices.get_mut(&id).unwrap().busy = false;
+                    let _ = reply.send(result);
+                    continue;
+                }
                 Some(Job::Apply(request)) => {
                     self.execute_apply(hardware.as_mut(), &request).await;
                     if matches!(request, Mutation::Oled(_)) {

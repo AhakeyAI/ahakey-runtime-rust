@@ -22,6 +22,7 @@ pub(super) enum Job {
     Apply(Mutation),
     ReadConfiguration,
     ReadOled(oneshot::Sender<Result<crate::oled::State>>),
+    RefreshHardware(oneshot::Sender<Result<crate::ahakey::state::HardwareState>>),
     ResumeConfiguration(Mutation),
     ResumeOled(crate::oled::Upload),
     Shutdown,
@@ -38,6 +39,7 @@ pub(super) struct Entry {
 pub(super) struct State {
     pub(super) input: crate::input::InputState,
     pub(super) voice: crate::voice::Controller,
+    pub(super) hooks: crate::hooks::Controller,
     pub(super) devices: BTreeMap<String, Entry>,
     pub(super) journal: Journal,
     pub(super) sequence: u64,
@@ -61,6 +63,12 @@ impl State {
         });
     }
     pub(super) fn invalidate(&mut self, id: &str) {
+        if self.hooks.preferences.enabled && self.hooks.preferences.device_id.as_deref() == Some(id)
+        {
+            self.hooks.deactivate();
+            let view = json!(self.hooks);
+            self.emit("hooks.changed", view);
+        }
         if let Some(entry) = self.devices.get_mut(id) {
             if entry
                 .document
@@ -86,7 +94,7 @@ impl Runtime {
         let snapshot = json!({"instanceId": self.instance_id, "sequence": state.sequence.to_string(),
             "devices": state.devices.values().map(|e| &e.device).collect::<Vec<_>>(),
             "operations": state.journal.operations.values().map(|r| &r.operation).collect::<Vec<_>>(),
-            "input": state.input, "voice": state.voice.view});
+            "input": state.input, "voice": state.voice.view, "hooks": state.hooks});
         (snapshot, receiver)
     }
     pub async fn input_message(&self, message: crate::input::InputMessage) {
@@ -102,6 +110,20 @@ impl Runtime {
                 }
                 state.input = input.clone();
                 state.emit("input.changed", json!(input));
+                if state.hooks.preferences.input_device_id.is_some()
+                    && (input.status != "listening"
+                        || !input.devices.iter().any(|d| {
+                            Some(&d.input_device_id)
+                                == state.hooks.preferences.input_device_id.as_ref()
+                        }))
+                {
+                    state.hooks.preferences.input_device_id = None;
+                    state.hooks.preferences.approve_usage = None;
+                    state.hooks.preferences.reject_usage = None;
+                    state.hooks.learning = None;
+                    let view = json!(state.hooks);
+                    state.emit("hooks.changed", view);
+                }
                 if state.voice.view.preferences.enabled
                     && (input.status != "listening"
                         || !input.devices.iter().any(|device| {
@@ -120,6 +142,14 @@ impl Runtime {
             InputMessage::Key(event) => {
                 if state.input.apply_key(&event) {
                     state.emit("input.key", json!(event));
+                    let single_key = state.input.devices.iter().any(|d| {
+                        d.input_device_id == event.input_device_id
+                            && d.pressed_usages == [event.usage]
+                    });
+                    if single_key && state.hooks.key(&event) {
+                        let view = json!(state.hooks);
+                        state.emit("hooks.changed", view);
+                    }
                     if state.voice.key(&event) {
                         let view = json!(state.voice.view);
                         state.emit("voice.changed", view);

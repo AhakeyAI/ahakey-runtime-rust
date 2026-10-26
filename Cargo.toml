@@ -1,5 +1,6 @@
 [package]
 name = "ahakey-runtime-rust"
+default-run = "ahakey-runtime-rust"
 version = "0.1.0"
 edition = "2024"
 

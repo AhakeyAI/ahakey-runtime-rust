@@ -2,6 +2,12 @@ use crate::configuration::{Configuration, ConfigurationReadback};
 use serde::{Deserialize, Serialize};
 
 pub const METHODS: &[&str] = &[
+    "hooks.get",
+    "hooks.configure",
+    "hooks.event",
+    "hooks.poll",
+    "hooks.decide",
+    "hooks.select",
     "voice.get",
     "voice.configure",
     "voice.control",

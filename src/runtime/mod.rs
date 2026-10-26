@@ -2,6 +2,7 @@
 mod configuration;
 mod configuration_transaction;
 mod device;
+mod hooks;
 mod oled;
 mod operations;
 mod readback;
@@ -52,6 +53,7 @@ impl Runtime {
             state: Mutex::new(State {
                 input: crate::input::InputState::default(),
                 voice: crate::voice::Controller::new(voice_preferences),
+                hooks: crate::hooks::Controller::default(),
                 devices: BTreeMap::new(),
                 journal,
                 sequence: 0,
@@ -113,6 +115,7 @@ impl Runtime {
             let mut state = self.state.lock().await;
             state.stopping = true;
             let _ = state.voice.cancel();
+            state.hooks.deactivate();
             for entry in state.devices.values() {
                 if let Some((_, pause)) = &entry.upload_pause {
                     pause.send_replace(true);

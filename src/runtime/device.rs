@@ -43,6 +43,15 @@ impl Runtime {
         entry.device.lever = hardware.lever.map(str::to_owned);
         entry.lighting_supported = hardware.brightness.is_some();
         let device = entry.device.clone();
+        if old.connection_state == "ready"
+            && old.work_mode != device.work_mode
+            && state.hooks.preferences.device_id.as_deref() == Some(id)
+        {
+            state.hooks.deactivate();
+            let view = json!(state.hooks);
+            state.emit("hooks.changed", view);
+        }
+        let entry = state.devices.get_mut(id).unwrap();
         let known_brightness = entry
             .document
             .configuration
@@ -75,6 +84,11 @@ impl Runtime {
         entry.lighting_supported = false;
         let device = entry.device.clone();
         if changed {
+            if state.hooks.preferences.device_id.as_deref() == Some(id) {
+                state.hooks.deactivate();
+                let view = json!(state.hooks);
+                state.emit("hooks.changed", view);
+            }
             state.invalidate(id);
             state.emit("device.changed", json!(device));
         }

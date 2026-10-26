@@ -96,6 +96,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let mut serving = tokio::spawn(ipc::serve(listener, runtime.clone(), token));
+    let hook_runtime = runtime.clone();
+    let hook_expiry = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            hook_runtime.expire_hooks().await;
+        }
+    });
     tokio::select! {
         result = &mut serving => result??,
         result = shutdown_signal() => result?,
@@ -104,6 +112,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     serving.abort();
     let _ = serving.await;
     discovery.unpublish();
+    hook_expiry.abort();
+    let _ = hook_expiry.await;
     if let Some(task) = voice_task {
         task.abort();
         let _ = task.await;

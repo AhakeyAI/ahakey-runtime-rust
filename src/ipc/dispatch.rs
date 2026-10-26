@@ -7,6 +7,40 @@ use crate::{
 use serde_json::{Value, json};
 pub(super) async fn dispatch(runtime: &Runtime, method: &str, params: Value) -> Result<Value> {
     match method {
+        "hooks.get" => Ok(runtime.hooks().await),
+        "hooks.configure" => runtime.configure_hooks(decode(params)?).await,
+        "hooks.event" => runtime.hook_event(decode(params)?).await,
+        "hooks.poll" | "hooks.decide" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Request {
+                request_id: String,
+                decision: Option<String>,
+            }
+            let request: Request = decode(params)?;
+            if method == "hooks.poll" {
+                runtime.hook_poll(&request.request_id).await
+            } else {
+                runtime
+                    .hook_decide(
+                        &request.request_id,
+                        request.decision.as_deref().ok_or(Error("INVALID_PARAMS"))?,
+                    )
+                    .await
+            }
+        }
+        "hooks.select" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Selection {
+                request_id: Option<String>,
+                learning: Option<String>,
+            }
+            let selection: Selection = decode(params)?;
+            runtime
+                .hook_select(selection.request_id, selection.learning)
+                .await
+        }
         "voice.get" => Ok(json!(runtime.voice().await)),
         "voice.configure" => Ok(json!(runtime.configure_voice(decode(params)?).await?)),
         "voice.control" => {

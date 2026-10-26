@@ -3,6 +3,7 @@ pub mod configuration;
 pub mod debug;
 pub mod discovery;
 pub mod error;
+pub mod hooks;
 pub mod input;
 pub mod ipc;
 pub use configuration::keymap;
