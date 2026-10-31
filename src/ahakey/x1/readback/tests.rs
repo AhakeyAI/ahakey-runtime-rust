@@ -46,7 +46,6 @@ struct Device {
     fragment_size: Option<usize>,
     queries: usize,
     round: usize,
-    versions: Vec<Vec<u8>>,
     stall: bool,
     cancelled: Arc<AtomicBool>,
     writes: Arc<AtomicUsize>,
@@ -66,7 +65,6 @@ impl Device {
             fragment_size: None,
             queries: 0,
             round: 0,
-            versions: vec![],
             stall: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             writes: Arc::new(AtomicUsize::new(0)),
@@ -98,9 +96,6 @@ impl CommandTransport for Device {
                 let _cancel = Cancelled(self.cancelled.clone());
                 std::future::pending::<()>().await;
             }
-        }
-        if command == frame(0x87, &[0, 0]) && !self.versions.is_empty() {
-            return Ok(self.versions[(self.round - 1).min(self.versions.len() - 1)].clone());
         }
         let response = self
             .responses
@@ -169,6 +164,8 @@ impl Hardware for Device {
 async fn production_c_capture_restores_descriptions_and_a_complete_configuration() {
     let mut device = Device::new();
     let observed = read(&mut device).await.unwrap().unwrap();
+    assert_eq!(device.round, 1, "collect each field once");
+    assert_eq!(device.queries, 54, "one catalog plus 53 field queries");
     assert_eq!(observed.device.brightness_percent, 35);
     assert!(observed.device.task_light_mode.is_none());
     for mode in &observed.modes {
@@ -243,26 +240,17 @@ async fn unsupported_identities_and_generic_acks_do_not_enable_readback() {
 }
 
 #[tokio::test]
-async fn raw_observations_and_error_status_must_stabilize_before_publication() {
-    for (a, mut b, offset) in [
-        (case("chord"), case("chord"), 9),
-        (case("nonAscii"), case("nonAscii"), 10),
-        (case("tooLarge"), case("unsupportedType"), usize::MAX),
-    ] {
-        if offset != usize::MAX {
-            b[offset] ^= 1;
-        }
+async fn single_pass_preserves_unrepresentable_fields_without_resampling() {
+    for name in ["chord", "nonAscii", "tooLarge", "unsupportedType"] {
+        let response = case(name);
+        let expected = key(&response, 0, 0).unwrap();
         let mut device = Device::new();
-        device.versions = vec![a.clone(), b.clone(), b.clone()];
+        device.response(frame(0x87, &[0, 0]), response);
         let result = read(&mut device).await.unwrap().unwrap();
-        assert_eq!(device.round, 3);
+        assert_eq!(device.round, 1);
+        assert_eq!(device.queries, 54);
+        assert_eq!(result.modes[0].keys[0], expected);
         assert!(result.complete_configuration().is_none());
-        let mut unstable = Device::new();
-        unstable.versions = vec![a.clone(), b, a];
-        assert_eq!(
-            read(&mut unstable).await.unwrap_err().0,
-            "CONFIGURATION_CHANGED"
-        );
     }
 }
 

@@ -237,9 +237,9 @@ Unix 上 discovery 父目录必须为私有目录（通常 `0700`），文件以
 
 此方法**不会读取键盘 Flash**。真实设备初连、Runtime 重启、设备断连或观测到外部亮度变化后，完整配置可能为 `null`。`null` 表示完整配置未知，界面应禁用完整配置保存，避免将本地默认值误当作设备内容。
 
-Runtime 以 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da) 为基准，用 `0x87` 读取按键及描述、`0x88` 读取亮度和灯效。在首次连接、重连及进程重启后自动读取，连续两次采集一致后，在可选字段 `readback` 中提供。读取期间设备保持 `connecting`，完成后更新 baseToken、发布 `configuration.changed`，再进入 `ready`。
+Runtime 以 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da) 为基准，用 `0x87` 读取按键及描述、`0x88` 读取亮度和灯效。在首次连接、重连及进程重启后自动读取，单轮采集完成后，在可选字段 `readback` 中提供。读取期间设备保持 `connecting`，完成后更新 baseToken、发布 `configuration.changed`，再进入 `ready`。
 
-`readback` 与完整 `configuration` 分开：所有现有可写字段完整可读且可表示时，自动建立完整 `configuration`。不能表达的动作或非 ASCII 描述为 `null`，原始字节保留。固件没有配置 revision，Runtime 使用连续采集结果比较，不用未知字段生成完整基线。
+`readback` 与完整 `configuration` 分开：所有现有可写字段完整可读且可表示时，自动建立完整 `configuration`。不能表达的动作或非 ASCII 描述为 `null`，原始字节保留。设备 worker 串行执行读写，不用未知字段生成完整基线。固件没有配置 revision，单轮读回不是原子快照；其他客户端或设备端的并发修改不能通过版本号检测。
 
 `baseToken` 用于防止旧会话或并发修改覆盖当前状态。不要解析、递增或自行生成。成功写入和基线失效后 token 会改变。收到配置事件或写入终态后，应重新读取再开始下一次编辑/保存。
 
@@ -636,7 +636,7 @@ HTTP 403、超出连接数、消息过大、认证超时、发送超时或事件
 | 设备写入 | 每设备一个在途操作，worker 队列容量 1；不提供应用级批量排队 |
 | 持久操作记录 | 最多 128 个已受理 ID，终态也计入；满后新写入返回 `BUSY` |
 | X1 硬件命令 | 每次交换最多 4 秒；整次保存可远长于一个 RPC 超时 |
-| 自动读回 | 总上限 45 秒；每次采集 53 个只读请求，连续两次一致才发布，最多采集三次 |
+| 自动读回 | 总上限 45 秒；单轮 53 个字段查询加一次 catalog 查询，完整采集成功后发布 |
 
 持久记录不会自动淘汰，也没有归档/删除 RPC。维护前应停止 Runtime 并核对客户端未决操作，不要在应用中直接删除运行中的日志或锁文件。
 

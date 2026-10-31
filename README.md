@@ -71,7 +71,7 @@ cargo run --locked
 
 开启蓝牙，允许承载进程的终端访问蓝牙。日志会打印稳定设备 ID：`x1-<平台外设 ID>`。可以通过 `--device-id` 固定选择；未发现设备时后台重试，IPC 仍可连接。
 
-Runtime 以远端 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da) 为固件基准。通过 `0x9F` catalog 识别设备，使用 `0x87` 读取按键动作与描述、`0x88` 读取亮度和灯效。首次连接、重连和进程重启后自动读取，两次采集一致后通过 `configuration.get.readback` 提供。
+Runtime 以远端 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da) 为固件基准。通过 `0x9F` catalog 识别设备，使用 `0x87` 读取按键动作与描述、`0x88` 读取亮度和灯效。首次连接、重连和进程重启后自动读取，单轮采集完成后通过 `configuration.get.readback` 提供。
 
 所有可写字段均可读取且能表示时，Runtime 自动建立完整 `configuration` 基线；超长按键或不可表示的数据保留未知。读回不完整时仍可独立改键；需要显式建立完整基线时，提供**四个模式及全局亮度的完整配置**并指定设备：
 

@@ -76,7 +76,7 @@ cargo run --locked
 
 Enable Bluetooth and grant the hosting terminal Bluetooth access. Discovery logs stable IDs such as `x1-<platform-peripheral-id>`. Use `--device-id` to select a specific device. Missing adapters/devices are retried while IPC remains available.
 
-Runtime targets remote [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da). It identifies the catalog with `0x9F`, reads key actions/descriptions with `0x87`, and brightness/light mappings with `0x88`. Connect, reconnect and process restart trigger readback; two matching collections are published through `configuration.get.readback`.
+Runtime targets remote [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da). It identifies the catalog with `0x9F`, reads key actions/descriptions with `0x87`, and brightness/light mappings with `0x88`. Connect, reconnect and process restart trigger readback; a single collection is published through `configuration.get.readback`.
 
 When all writable fields are readable and representable, Runtime establishes a complete session configuration baseline automatically. Oversized or unrepresentable keys stay unknown. Independent key remapping remains available with partial readback. To explicitly establish a full baseline, supply a **complete configuration** (all four modes and brightness) and select the exact device:
 

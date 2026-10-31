@@ -137,16 +137,9 @@ pub(super) async fn read(io: &mut impl CommandTransport) -> Result<Option<Config
     if identity != frame(0x9f, &[&[0][..], super::oled::CATALOG].concat()) {
         return Ok(None);
     }
-    let mut previous = collect(io).await?;
-    for _ in 0..2 {
-        let current = collect(io).await?;
-        // Compare raw observations too: distinct unknown values must not collapse.
-        if current == previous {
-            return Ok(Some(current));
-        }
-        previous = current;
-    }
-    Err(Error("CONFIGURATION_CHANGED"))
+    // The device worker serializes reads and writes. Collect each field once;
+    // firmware has no revision token, so this is not an atomic device snapshot.
+    Ok(Some(collect(io).await?))
 }
 
 fn action(bytes: &[u8]) -> Result<Action> {

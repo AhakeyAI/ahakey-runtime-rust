@@ -113,7 +113,7 @@ python3 scripts/diagnostics/check-device.py 'x1-DEVICE_ID' --reconnect
 
 固件依据为 [Fireware-harness `076382b`](https://github.com/AhakeyAI/AhaKey-X1-hardware-source/tree/076382b2214289ac7bc1735d669d7de78730c4da)，其生产源码与已验收的 `70ca334` 相同。X1 通过 `0x9F` 匹配 catalog `x1-c582-hw1-p1-1.0.0-r001`，再用 `0x87` 读取四模式按键动作和描述、`0x88` 读取亮度和灯效。Runtime 仅实现这套配置读取协议。
 
-每次完整采集 53 个只读请求，连续两次一致才发布，最多采集三次；比较包含原始动作、描述和数值读取状态。总上限 45 秒，每次交换仍有 4 秒上限；预算不含 worker 前后的状态查询。固件没有配置 revision，因此这是连续采集的一致性检查，应保持 Runtime 为唯一设备 owner。
+每次完整读回只采集一轮：53 个字段查询加一次 catalog 查询，共 54 个只读请求；显式读取再刷新一次硬件状态，共 55 次交换。完整采集成功后发布，保留原始动作、描述和数值读取状态。总上限 45 秒，每次交换仍有 4 秒上限；预算不含 worker 前后的状态查询。设备 worker 串行执行读写；固件没有配置 revision，单轮读回不是原子快照，应保持 Runtime 为唯一配置客户端。
 
 每次连接、重连、进程重启均重新读取。读取期间保持 connecting，完成后刷新状态和 baseToken、发布 configuration.changed 并进入 ready。可表示的完整读回经原有配置校验后成为当前会话基线。单键 status 2/3 保留该键未知，其他键继续读取；不能表示的动作、非 ASCII 描述保留原始字节。`taskLightMode` 为 null，因为 `0x98` 只设置、不支持查询。
 
