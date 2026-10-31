@@ -17,6 +17,7 @@ async fn input_snapshot_recovers_held_keys_and_permission_loss_clears_them() {
             devices: vec![InputDevice {
                 input_device_id: "hid-123".into(),
                 name: "AhaKey Test".into(),
+                stable_id: None,
                 pressed_usages: vec![],
             }],
         }))

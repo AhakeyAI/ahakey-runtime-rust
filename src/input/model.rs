@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct InputDevice {
     pub input_device_id: String,
     pub name: String,
+    #[serde(default)]
+    pub stable_id: Option<String>,
     pub pressed_usages: Vec<u32>,
 }
 
@@ -85,11 +87,13 @@ mod tests {
                 InputDevice {
                     input_device_id: "hid-1".into(),
                     name: "AhaKey".into(),
+                    stable_id: None,
                     pressed_usages: vec![],
                 },
                 InputDevice {
                     input_device_id: "hid-2".into(),
                     name: "AhaKey".into(),
+                    stable_id: None,
                     pressed_usages: vec![],
                 },
             ],

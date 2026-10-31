@@ -70,6 +70,7 @@ impl Runtime {
         if external_change {
             state.invalidate(id);
         }
+        state.restore_features();
         if old != device {
             state.emit("device.changed", json!(device));
         }
@@ -85,6 +86,7 @@ impl Runtime {
         let device = entry.device.clone();
         if changed {
             if state.hooks.preferences.device_id.as_deref() == Some(id) {
+                state.resume_hooks = state.hooks.preferences.enabled;
                 state.hooks.deactivate();
                 let view = json!(state.hooks);
                 state.emit("hooks.changed", view);

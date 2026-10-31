@@ -6,6 +6,7 @@ mod hooks;
 mod oled;
 mod operations;
 mod readback;
+mod recovery;
 mod state;
 mod voice;
 mod worker;
@@ -45,12 +46,18 @@ impl Runtime {
         voice_preferences.validate()?;
         voice_preferences.enabled = false;
         voice_preferences.input_device_id = None;
+        let recovery_path = path.with_extension("recovery.json");
+        let recovery = recovery::Recovery::load(&recovery_path)?;
         let (storage, journal) = Storage::open(path).await?;
         let (events, _) = broadcast::channel(256);
         Ok(Arc::new(Self {
             instance_id: Uuid::new_v4().to_string(),
             storage,
             state: Mutex::new(State {
+                recovery,
+                recovery_path,
+                resume_voice: true,
+                resume_hooks: true,
                 input: crate::input::InputState::default(),
                 voice: crate::voice::Controller::new(voice_preferences),
                 hooks: crate::hooks::Controller::default(),

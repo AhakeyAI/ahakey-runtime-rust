@@ -18,7 +18,7 @@ Runtime 管理 `AhaKey Speech.app`，Swift 使用 AVAudioEngine 与 Apple Speech
 状态流：idle → recording → finalizing → completed（可选 inserting → completed）；失败为 failed。
 120 秒自动停止，最终结果最多等 12 秒，之后报告超时。过期会话回调被丢弃，重复最终结果不能重复输出。
 Runtime 与 helper 的管道关闭会结束录音；退出 Studio 不结束 Runtime。
-设置保存到私有 `*.voice.json`；HID 来源和 enabled 不跨 Runtime 重启保存，断开输入设备后重新选择。
+设置保存到私有 `*.voice.json` 和 `*.recovery.json`。新的输入组件上报物理身份的 SHA-256；重启或断开重连后，仅在唯一匹配原设备、权限已授予且所有键松开时恢复语音。无稳定身份的旧组件仍需重新选择来源。恢复不启动录音。
 音频、转写、输入焦点不写 journal 或诊断日志。转写留在本次内存会话，清除或重启后消失。
 仅本机识别不可用时返回 VOICE_OFFLINE_UNAVAILABLE；允许联网时 Apple Speech 可能联网处理音频。
 AhaType 云端文字整理与云账号不是当前 Apple Speech 实现的一部分，仍未接入。
@@ -50,7 +50,7 @@ Studio 中先关联在线键盘并启用；自动放行另有明确开关。每�
 手动批准/拒绝来自 Studio 的具体 requestId，或所选 HID 来源录入的独立批准/拒绝键。
 同时有多个待审批请求时，实体按键必须先有明确选中的目标；仅一条时可直接操作。组合键不触发批准。
 输入监听不会吞掉原键码，勿将复杂宏作为审批键。录入动作本身不批准请求。
-设备运行模式或配置失效后停用联动，需重新核对来源；输入设备断开清除录入按键。
+设备运行模式或配置失效后停用联动，需重新核对来源；重启或断开重连后，仅在原设备和保存的模式相符时恢复手动联动。输入审批键还需唯一匹配原 HID 物理身份。自动批准不跨重启或断连恢复。
 
 审批最多等待 60 秒；过期、停用、会话结束交回工具审批。进程重启不恢复待审批请求。
 至多保留 32 个会话、64 条审批记录、16 条 pending，请求内容仅在内存中，不进入诊断日志。
@@ -65,7 +65,7 @@ Studio 中先关联在线键盘并启用；自动放行另有明确开关。每�
 | hooks.decide | `{requestId,decision}` |
 | hooks.select | `{requestId,learning}`；learning 为 approve/reject/null |
 
-快照含 hooks；hooks.changed 推送完整视图。关闭 Studio 保留 Runtime 中的联动；显式停用或 Runtime 重启结束启用状态。
+快照含 hooks；hooks.changed 推送完整视图。关闭 Studio 保留 Runtime 中的联动；显式停用持久保存。重启时不恢复会话、待审批请求、选中目标或录入状态。
 
 在 Studio 生成工具配置，将 hooks 合并到项目文件，保留已有条目：
 
@@ -96,7 +96,7 @@ UI 测试覆盖显式设置、录音结束的 sessionId、刷新后结果恢复�
 - 中文、英文识别；联网与仅本机模式；麦克风切换、权限撤销、睡眠唤醒。
 - 原焦点输入、焦点改变后保留结果、剪贴板恢复、退出 Studio 后语音继续可用。
 - 各目标工具真实会话加载 Hook、收到工作状态与真实审批；实体拨杆手动/自动、实体批准/拒绝与断连。
-- 应用内完整安装/卸载 Hook 的流程尚未实现，目前提供配置生成与手动合并接入。
+- Studio 已支持当前用户级 Codex Hook 安装、修复和移除，首次启动有引导；Claude Code／Cursor 仍使用配置生成与手动合并接入。
 - 云端账号/AhaType 整理、工具状态驱动硬件灯光属于额外集成，当前尚未实现。
 
 

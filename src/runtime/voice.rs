@@ -28,6 +28,7 @@ impl Runtime {
             return;
         }
         state.voice.native_event(event);
+        state.restore_features();
         let view = json!(state.voice.view);
         state.emit("voice.changed", view);
     }
@@ -55,7 +56,7 @@ impl Runtime {
                 return Err(Error("VOICE_INPUT_NOT_READY"));
             }
         }
-        // HID connection IDs are ephemeral. Restart requires selecting the current source again.
+        // Keep legacy preferences readable; restoration uses the stable HID identity separately.
         let mut saved = preferences.clone();
         saved.enabled = false;
         saved.input_device_id = None;
@@ -63,6 +64,7 @@ impl Runtime {
             &self.voice_preferences_path,
             &serde_json::to_vec(&saved).map_err(|_| Error("STORAGE_ERROR"))?,
         )?;
+        state.remember_voice(&preferences)?;
         state.voice.view.preferences = preferences;
         let view = state.voice.view.clone();
         state.emit("voice.changed", json!(view));

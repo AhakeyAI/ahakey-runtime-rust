@@ -47,6 +47,7 @@ impl Runtime {
         {
             return Err(Error("HOOK_INPUT_NOT_READY"));
         }
+        state.remember_hooks(&preferences)?;
         state.hooks.deactivate();
         state.hooks.preferences = preferences;
         let view = json!(state.hooks);

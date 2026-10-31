@@ -37,6 +37,10 @@ pub(super) struct Entry {
     pub(super) upload_pause: Option<(String, watch::Sender<bool>)>,
 }
 pub(super) struct State {
+    pub(super) recovery: super::recovery::Recovery,
+    pub(super) recovery_path: std::path::PathBuf,
+    pub(super) resume_voice: bool,
+    pub(super) resume_hooks: bool,
     pub(super) input: crate::input::InputState,
     pub(super) voice: crate::voice::Controller,
     pub(super) hooks: crate::hooks::Controller,
@@ -117,6 +121,8 @@ impl Runtime {
                                 == state.hooks.preferences.input_device_id.as_ref()
                         }))
                 {
+                    state.resume_hooks = state.hooks.preferences.enabled;
+                    state.hooks.deactivate();
                     state.hooks.preferences.input_device_id = None;
                     state.hooks.preferences.approve_usage = None;
                     state.hooks.preferences.reject_usage = None;
@@ -131,6 +137,7 @@ impl Runtime {
                                 == state.voice.view.preferences.input_device_id.as_ref()
                         }))
                 {
+                    state.resume_voice = true;
                     let _ = state.voice.cancel();
                     state.voice.view.preferences.enabled = false;
                     state.voice.view.preferences.input_device_id = None;
@@ -146,7 +153,14 @@ impl Runtime {
                         d.input_device_id == event.input_device_id
                             && d.pressed_usages == [event.usage]
                     });
+                    let learning = state.hooks.learning.is_some();
                     if single_key && state.hooks.key(&event) {
+                        if learning {
+                            let preferences = state.hooks.preferences.clone();
+                            if let Err(error) = state.remember_hooks(&preferences) {
+                                eprintln!("Unable to save approval key: {error}");
+                            }
+                        }
                         let view = json!(state.hooks);
                         state.emit("hooks.changed", view);
                     }
@@ -157,5 +171,6 @@ impl Runtime {
                 }
             }
         }
+        state.restore_features();
     }
 }

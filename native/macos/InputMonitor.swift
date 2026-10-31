@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import IOKit.hid
 import Darwin
 
@@ -7,6 +8,7 @@ import Darwin
 final class InputMonitor {
     private var manager: IOHIDManager?
     private var devices: [String: String] = [:]
+    private var identities: [String: String] = [:]
     private var pressed: [String: [UInt32: UInt64]] = [:]
     private var lastState: Data?
     private var requested = false
@@ -22,7 +24,7 @@ final class InputMonitor {
     private func state(_ status: String, _ permission: String) {
         let data: [String: Any] = ["status": status, "permission": permission,
             "devices": devices.keys.sorted().map { id in
-                ["inputDeviceId": id, "name": devices[id]!, "pressedUsages": (pressed[id] ?? [:]).keys.sorted()] as [String: Any]
+                ["inputDeviceId": id, "name": devices[id]!, "stableId": identities[id] as Any? ?? NSNull(), "pressedUsages": (pressed[id] ?? [:]).keys.sorted()] as [String: Any]
             }]
         let encoded = try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys])
         guard encoded != lastState else { return }
@@ -41,11 +43,22 @@ final class InputMonitor {
     func attached(_ device: IOHIDDevice) {
         guard let (id, name) = identity(device) else { return }
         devices[id] = name
+        // PhysicalDeviceUniqueID identifies the physical keyboard across HID reconnects.
+        // Never fall back to the display name or connection-scoped registry entry ID.
+        let unique = (IOHIDDeviceGetProperty(device, "PhysicalDeviceUniqueID" as CFString) as? String)
+            ?? (IOHIDDeviceGetProperty(device, kIOHIDSerialNumberKey as CFString) as? String)
+        if let unique, !unique.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let vendor = IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? NSNumber
+            let product = IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? NSNumber
+            let material = "\(vendor?.stringValue ?? ""):\(product?.stringValue ?? ""):\(unique)"
+            identities[id] = SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
         publishDevices()
     }
     func removed(_ device: IOHIDDevice) {
         guard let (id, _) = identity(device) else { return }
         devices.removeValue(forKey: id)
+        identities.removeValue(forKey: id)
         pressed.removeValue(forKey: id)
         publishDevices()
     }
@@ -125,6 +138,7 @@ final class InputMonitor {
         }
         manager = nil
         devices.removeAll()
+        identities.removeAll()
         pressed.removeAll()
     }
 }

@@ -149,6 +149,7 @@ async fn hardware_confirmation_needs_an_unambiguous_pending_request() {
             devices: vec![InputDevice {
                 input_device_id: "hid-1".into(),
                 name: "AhaKey".into(),
+                stable_id: None,
                 pressed_usages: vec![],
             }],
         }))
@@ -277,5 +278,76 @@ async fn real_hook_binary_returns_the_decision_from_authenticated_runtime() {
         );
     }
     server.abort();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn restart_restores_manual_linkage_but_never_automatic_approval_or_pending_requests() {
+    let (dir, runtime, automatic, fail, reads) = setup().await;
+    let pending = runtime
+        .hook_event(event("codex", "PermissionRequest"))
+        .await
+        .unwrap();
+    runtime.shutdown().await;
+    drop(runtime);
+    let runtime = Runtime::open(dir.path().join("state.json")).await.unwrap();
+    assert_eq!(runtime.hooks().await["preferences"]["enabled"], false);
+    assert!(
+        runtime
+            .hook_poll(pending["requestId"].as_str().unwrap())
+            .await
+            .is_err()
+    );
+    runtime
+        .register(
+            AhaKey {
+                device_id: "x1".into(),
+                name: "Test X1".into(),
+                hardware: Box::new(Lever {
+                    automatic,
+                    fail,
+                    reads,
+                }),
+            },
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if runtime.hooks().await["preferences"]["enabled"] == true {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime.hooks().await["preferences"]["allowAutomatic"],
+        false
+    );
+    assert_eq!(runtime.hooks().await["approvals"], json!([]));
+    assert_eq!(runtime.hooks().await["sessions"], json!([]));
+    let pending = runtime
+        .hook_event(event("codex", "PermissionRequest"))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .hook_poll(pending["requestId"].as_str().unwrap())
+            .await
+            .unwrap()["decision"],
+        "pending"
+    );
+    runtime
+        .configure_hooks(Preferences::default())
+        .await
+        .unwrap();
+    runtime.shutdown().await;
+    drop(runtime);
+    let runtime = Runtime::open(dir.path().join("state.json")).await.unwrap();
+    assert_eq!(runtime.hooks().await["preferences"]["enabled"], false);
     runtime.shutdown().await;
 }
