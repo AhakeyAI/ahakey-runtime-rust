@@ -55,7 +55,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Runtime listening at {endpoint}\nDiscovery: {}",
         discovery.path().display()
     );
-    let discovery_task = if mock {
+    let mut discovery_task = if mock {
         runtime
             .register(
                 AhaKey {
@@ -104,13 +104,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             hook_runtime.expire_hooks().await;
         }
     });
-    tokio::select! {
-        result = &mut serving => result??,
-        result = shutdown_signal() => result?,
-        _ = parent_closed(), if parent_stdin => {},
+    let outcome: Result<(), Box<dyn std::error::Error>> = tokio::select! {
+        result = &mut serving => match result {
+            Ok(result) => result.map_err(Into::into),
+            Err(error) => Err(error.into()),
+        },
+        result = shutdown_signal() => result.map_err(Into::into),
+        _ = parent_closed(), if parent_stdin => Ok(()),
+        error = lifecycle::discovery_failed(&mut discovery_task) => {
+            Err(format!("Bluetooth discovery task failed: {error}").into())
+        },
+    };
+    if !serving.is_finished() {
+        serving.abort();
+        let _ = serving.await;
     }
-    serving.abort();
-    let _ = serving.await;
     discovery.unpublish();
     hook_expiry.abort();
     let _ = hook_expiry.await;
@@ -137,5 +145,5 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(discovery);
     ahakey_runtime_rust::debug::event("runtime.stop", || serde_json::json!({}));
-    Ok(())
+    outcome
 }

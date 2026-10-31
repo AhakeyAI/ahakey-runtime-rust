@@ -9,7 +9,7 @@ use btleplug::{
         Central, Manager as _, Peripheral as _, RetrievePeripheralsOptions, ScanFilter,
         bleuuid::uuid_from_u16,
     },
-    platform::Manager,
+    platform::{Adapter, Manager},
 };
 use std::{sync::Arc, time::Duration};
 
@@ -19,12 +19,15 @@ pub async fn discover(
     selected: Option<String>,
     initialize: Option<Configuration>,
 ) {
+    // CoreBluetooth owns a native event thread per adapter. Keep one set for
+    // this discovery session instead of allocating another on every retry.
+    let mut adapters = None;
     loop {
         crate::debug::event(
             "ble.discovery",
             || serde_json::json!({"selectedDevice":selected}),
         );
-        match find_x1(selected.as_deref()).await {
+        match find_x1(&mut adapters, selected.as_deref()).await {
             Ok(Some(device)) => {
                 if let Err(error) = runtime.register(device, initialize, false).await {
                     eprintln!("Device registration: {error}");
@@ -37,15 +40,24 @@ pub async fn discover(
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
-async fn find_x1(selected: Option<&str>) -> Result<Option<AhaKey>> {
-    let manager = Manager::new()
-        .await
-        .map_err(|_| Error("BLUETOOTH_UNAVAILABLE"))?;
-    let adapters = manager
-        .adapters()
-        .await
-        .map_err(|_| Error("BLUETOOTH_UNAVAILABLE"))?;
-    for adapter in adapters {
+async fn find_x1(
+    adapters: &mut Option<Vec<Adapter>>,
+    selected: Option<&str>,
+) -> Result<Option<AhaKey>> {
+    if adapters.is_none() {
+        let manager = Manager::new()
+            .await
+            .map_err(|_| Error("BLUETOOTH_UNAVAILABLE"))?;
+        let available = manager
+            .adapters()
+            .await
+            .map_err(|_| Error("BLUETOOTH_UNAVAILABLE"))?;
+        if available.is_empty() {
+            return Ok(None);
+        }
+        *adapters = Some(available);
+    }
+    for adapter in adapters.as_ref().expect("adapters initialized above") {
         let mut devices = adapter
             .retrieve_peripherals(RetrievePeripheralsOptions {
                 identifiers: None,
