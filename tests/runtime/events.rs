@@ -3,6 +3,7 @@ use super::*;
 struct NotifyingHardware {
     events: tokio::sync::mpsc::Receiver<Result<HardwareState>>,
     refreshes: Arc<AtomicUsize>,
+    state: HardwareState,
 }
 #[async_trait]
 impl Hardware for NotifyingHardware {
@@ -10,13 +11,7 @@ impl Hardware for NotifyingHardware {
         ahakey_runtime_rust::protocol::x1::configuration_commands(configuration)
     }
     async fn connect(&mut self) -> Result<HardwareState> {
-        Ok(HardwareState {
-            work_mode: 0,
-            light_mode: 0,
-            battery: Some(82),
-            lever: Some("manual"),
-            brightness: Some(35),
-        })
+        Ok(self.state.clone())
     }
     async fn disconnect(&mut self) -> Result<()> {
         Ok(())
@@ -26,10 +21,13 @@ impl Hardware for NotifyingHardware {
         self.connect().await
     }
     async fn next_event(&mut self) -> Result<HardwareState> {
-        self.events
+        let state = self
+            .events
             .recv()
             .await
-            .unwrap_or(Err(Error("DEVICE_DISCONNECTED")))
+            .unwrap_or(Err(Error("DEVICE_DISCONNECTED")))?;
+        self.state = state.clone();
+        Ok(state)
     }
     async fn write_confirmed(&mut self, _: &[u8]) -> Result<()> {
         Ok(())
@@ -37,13 +35,20 @@ impl Hardware for NotifyingHardware {
 }
 
 #[tokio::test]
-async fn hardware_notifications_reach_websocket_without_polling() {
+async fn hardware_notifications_reach_websocket_without_waiting_for_status_poll() {
     let (sender, events) = tokio::sync::mpsc::channel(8);
     let refreshes = Arc::new(AtomicUsize::new(0));
     let (_directory, runtime) = setup(
         Box::new(NotifyingHardware {
             events,
             refreshes: refreshes.clone(),
+            state: HardwareState {
+                work_mode: 0,
+                light_mode: 0,
+                battery: Some(82),
+                lever: Some("manual"),
+                brightness: Some(35),
+            },
         }),
         false,
         None,
@@ -70,11 +75,10 @@ async fn hardware_notifications_reach_websocket_without_polling() {
         .expect("mode notification must reach Studio without waiting for a poll");
     assert_eq!(event["params"]["type"], "device.changed");
     assert_eq!(event["params"]["data"]["workMode"], 3);
-    tokio::time::sleep(Duration::from_millis(3200)).await;
-    assert_eq!(
-        refreshes.load(Ordering::SeqCst),
-        0,
-        "connected devices must not be polled"
+    tokio::time::sleep(Duration::from_millis(320)).await;
+    assert!(
+        (2..=5).contains(&refreshes.load(Ordering::SeqCst)),
+        "idle status queries should run about ten times per second without bursts"
     );
     sender
         .send(Err(Error("DEVICE_DISCONNECTED")))

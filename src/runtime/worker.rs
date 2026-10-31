@@ -19,7 +19,11 @@ impl Runtime {
         mut initialize: Option<Configuration>,
         simulated: bool,
     ) {
-        // Retry connection failures only. Connected devices wait on notifications.
+        // Some X1 firmware does not push lever changes. Refresh only the small
+        // status frame while idle; queued jobs and notifications take priority.
+        let mut status_poll = tokio::time::interval(Duration::from_millis(100));
+        status_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        status_poll.reset();
         let mut retry = tokio::time::interval(Duration::from_secs(3));
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut connected = false;
@@ -49,6 +53,27 @@ impl Runtime {
                 },
                 job = receiver.recv() => match job { Some(job) => Some(job), None => break },
                 _ = retry.tick(), if !connected => None,
+                _ = status_poll.tick(), if connected && !simulated => {
+                    {
+                        let state = self.state.lock().await;
+                        let entry = &state.devices[&id];
+                        if state.stopping || entry.busy || !entry.desired_connected {
+                            continue;
+                        }
+                    }
+                    // This worker owns the transport, so an arriving user job
+                    // queues behind the query. Do not clear that job's busy flag.
+                    match hardware.refresh().await {
+                        Ok(status) => self.publish_hardware(&id, &status).await,
+                        Err(error) => {
+                            eprintln!("Device {id}: {error}");
+                            let _ = hardware.disconnect().await;
+                            connected = false;
+                            self.disconnected(&id).await;
+                        }
+                    }
+                    continue;
+                },
             };
             match job {
                 Some(Job::Shutdown) => break,
