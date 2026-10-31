@@ -65,7 +65,7 @@ impl HookEvent {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if !["claude", "codex", "cursor"].contains(&self.tool.as_str())
+        if !["claude", "codex", "cursor", "kimi"].contains(&self.tool.as_str())
             || self.event_id.is_empty()
             || self.event_id.len() > 128
             || self.session_id.is_empty()
@@ -149,7 +149,7 @@ impl Controller {
             "permissionrequest" | "beforeshellexecution" | "beforemcpexecution" => "waiting",
             "stop" | "taskcompleted" => "done",
             "sessionend" | "interrupt" => "idle",
-            "posttoolusefailure" => "error",
+            "posttoolusefailure" | "stopfailure" => "error",
             _ => "working",
         };
         self.sessions

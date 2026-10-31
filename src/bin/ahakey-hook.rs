@@ -1,4 +1,4 @@
-//! Stdio adapter for Claude Code, Cursor and Codex. Never executes tool input.
+//! Stdio adapter for Claude Code, Cursor, Codex and Kimi Code. Never executes tool input.
 use ahakey_runtime_rust::hooks::{HookEvent, hook_output};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -21,13 +21,13 @@ async fn main() {
             "--config" => configuration = true,
             _ => {
                 eprintln!(
-                    "Usage: ahakey-hook --tool claude|cursor|codex [--event EVENT] [--discovery PATH] [--config]"
+                    "Usage: ahakey-hook --tool claude|cursor|codex|kimi [--event EVENT] [--discovery PATH] [--config]"
                 );
                 std::process::exit(1);
             }
         }
     }
-    if !["claude", "cursor", "codex"].contains(&tool.as_str()) {
+    if !["claude", "cursor", "codex", "kimi"].contains(&tool.as_str()) {
         eprintln!("Unknown tool");
         std::process::exit(1);
     }
@@ -51,7 +51,7 @@ async fn main() {
         .is_err()
         || bytes.len() > 65_536
     {
-        println!("{}", hook_output(&tool, &event, "defer"));
+        emit(&tool, &event, "defer");
         return;
     }
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -90,7 +90,14 @@ async fn main() {
         Ok(Ok(decision)) => decision,
         _ => "defer".into(),
     };
-    println!("{}", hook_output(&tool, &event, &decision));
+    emit(&tool, &event, &decision);
+}
+
+fn emit(tool: &str, event: &str, decision: &str) {
+    // Kimi's permission hooks are observation-only; stdout can become prompt context.
+    if tool != "kimi" {
+        println!("{}", hook_output(tool, event, decision));
+    }
 }
 
 type Socket =
@@ -204,12 +211,24 @@ fn config(tool: &str, path: Option<&std::path::Path>) -> Result<Value, Box<dyn s
             "sessionStart",
             "sessionEnd",
             "beforeSubmitPrompt",
-            "preToolUse",
             "postToolUse",
             "postToolUseFailure",
             "beforeShellExecution",
             "beforeMCPExecution",
             "stop",
+        ]
+    } else if tool == "kimi" {
+        &[
+            "SessionStart",
+            "SessionEnd",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionRequest",
+            "PermissionResult",
+            "Stop",
+            "Interrupt",
         ]
     } else {
         &[
@@ -223,6 +242,12 @@ fn config(tool: &str, path: Option<&std::path::Path>) -> Result<Value, Box<dyn s
         ]
     };
     let mut hooks = serde_json::Map::new();
+    if tool == "kimi" {
+        // JSON representation of Kimi's [[hooks]] TOML array, consumed by tooling.
+        return Ok(
+            json!({"hooks": events.iter().map(|event| json!({"event":event,"command":format!("{command} --event {event}"),"timeout":3})).collect::<Vec<_>>()}),
+        );
+    }
     for event in events {
         let cmd = format!("{command} --event {event}");
         let handlers = if tool == "cursor" {

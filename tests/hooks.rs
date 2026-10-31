@@ -277,6 +277,43 @@ async fn real_hook_binary_returns_the_decision_from_authenticated_runtime() {
             ahakey_runtime_rust::hooks::hook_output(tool, event_name, "deny")
         );
     }
+    // Kimi reports permission state but does not accept approval decisions from hooks.
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ahakey-hook"))
+        .args([
+            "--tool",
+            "kimi",
+            "--event",
+            "PermissionRequest",
+            "--discovery",
+        ])
+        .arg(&discovery)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(br#"{"session_id":"kimi-test","cwd":"/project","tool_name":"Bash","tool_input":{"command":"echo test"}}"#).await.unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    let view = runtime.hooks().await;
+    assert!(
+        view["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["tool"] == "kimi" && s["status"] == "waiting")
+    );
+    assert!(
+        !view["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["context"]["tool"] == "kimi")
+    );
     server.abort();
     runtime.shutdown().await;
 }
